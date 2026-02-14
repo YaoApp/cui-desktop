@@ -1,6 +1,6 @@
 # CUI Desktop
 
-A cross-platform desktop shell for [CUI](https://github.com/YaoApp/cui) (the web-based admin interface of [Yao App Engine](https://yaoapps.com)). It wraps CUI in a native desktop window with a built-in local proxy, enabling seamless authentication, OAuth login, and same-origin access to all Yao server resources — without modifying CUI or Yao source code.
+A cross-platform desktop shell for [CUI](https://github.com/YaoApp/cui) — a Chat UI framework for building AI-native applications on [Yao App Engine](https://yaoapps.com). It wraps CUI in a native desktop window with a built-in local proxy, enabling seamless authentication, OAuth login, and same-origin access to all Yao server resources — without modifying CUI or Yao source code.
 
 Developers can rebrand and redistribute it as their own desktop application (e.g. **Yao Agents** at [yaoagents.com](https://yaoagents.com)) via `config.json`.
 
