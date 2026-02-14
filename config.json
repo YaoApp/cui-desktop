@@ -1,0 +1,21 @@
+{
+  "name": "Yao CUI Desktop",
+  "logo": "",
+  "port": 15099,
+  "theme": {
+    "primaryColor": "#3b82f6"
+  },
+  "updater": {
+    "active": false,
+    "endpoints": [
+      "https://github.com/YaoApp/cui-desktop/releases/latest/download/latest.json"
+    ],
+    "pubkey": ""
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:5099",
+      "label": "Local Dev Server"
+    }
+  ]
+}

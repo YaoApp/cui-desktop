@@ -1,18 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface AppConf {
+  name: string;
+  logo: string;
+  port: number;
+  theme: {
+    primaryColor: string;
+  };
+  updater: {
+    active: boolean;
+    endpoints: string[];
+    pubkey: string;
+  };
+  servers: Array<{
+    url: string;
+    label: string;
+  }>;
+}
+
 export interface WellKnownInfo {
   name: string | null;
   version: string | null;
   openapi: string | null;
   dashboard: string | null;
   issuer_url: string | null;
-}
-
-export interface LoginResult {
-  success: boolean;
-  message: string;
-  token: string;
-  auth_mode: string;
 }
 
 export interface ProxyStatus {
@@ -23,27 +34,14 @@ export interface ProxyStatus {
   auth_mode: string;
 }
 
+/** Get developer app config (config.json) */
+export async function getAppConf(): Promise<AppConf> {
+  return invoke<AppConf>("get_app_conf");
+}
+
 /** Check remote server availability */
 export async function checkServer(serverUrl: string): Promise<WellKnownInfo> {
   return invoke<WellKnownInfo>("check_server", { serverUrl });
-}
-
-/** OpenAPI login */
-export async function loginOpenapi(
-  serverUrl: string,
-  username: string,
-  password: string
-): Promise<LoginResult> {
-  return invoke<LoginResult>("login_openapi", { serverUrl, username, password });
-}
-
-/** Legacy login */
-export async function loginLegacy(
-  serverUrl: string,
-  username: string,
-  password: string
-): Promise<LoginResult> {
-  return invoke<LoginResult>("login_legacy", { serverUrl, username, password });
 }
 
 /** Start the local proxy server */

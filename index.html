@@ -5,9 +5,52 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Yao CUI Desktop</title>
     <link rel="stylesheet" href="/src/styles/global.css" />
+    <style>
+      #boot-error {
+        display: none;
+        position: fixed; inset: 0;
+        background: #f8fafc;
+        font-family: -apple-system, sans-serif;
+        padding: 40px;
+        z-index: 99999;
+      }
+      #boot-error h2 { color: #ef4444; margin-bottom: 12px; }
+      #boot-error pre {
+        background: #1e293b; color: #e2e8f0; padding: 16px;
+        border-radius: 8px; font-size: 12px; overflow: auto;
+        max-height: 60vh; white-space: pre-wrap; word-break: break-all;
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#94a3b8;font-family:sans-serif">
+        Loading...
+      </div>
+    </div>
+    <div id="boot-error">
+      <h2>Startup Error</h2>
+      <pre id="boot-error-msg"></pre>
+    </div>
+    <script>
+      // Catch any unhandled errors and display them
+      window.addEventListener('error', function(e) {
+        var el = document.getElementById('boot-error');
+        var msg = document.getElementById('boot-error-msg');
+        if (el && msg) {
+          el.style.display = 'block';
+          msg.textContent += '[ERROR] ' + e.message + '\n  at ' + e.filename + ':' + e.lineno + ':' + e.colno + '\n\n';
+        }
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        var el = document.getElementById('boot-error');
+        var msg = document.getElementById('boot-error-msg');
+        if (el && msg) {
+          el.style.display = 'block';
+          msg.textContent += '[PROMISE] ' + (e.reason ? (e.reason.stack || e.reason.message || String(e.reason)) : 'Unknown') + '\n\n';
+        }
+      });
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -18,7 +18,7 @@ impl Default for ProxyState {
     fn default() -> Self {
         Self {
             running: false,
-            port: 19840,
+            port: 15099,
             server_url: String::new(),
             token: String::new(),
             auth_mode: String::from("openapi"),

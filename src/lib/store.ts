@@ -1,18 +1,15 @@
 import { load } from "@tauri-apps/plugin-store";
 
+/** A user-saved server entry */
 export interface ServerEntry {
   url: string;
-  name: string;
-  token: string;
-  authMode: "openapi" | "legacy";
-  tokenExpiresAt: number; // Unix timestamp ms
-  lastConnected: number;
+  label: string;
+  lastConnected: number; // Unix timestamp ms
 }
 
 export interface AppSettings {
   servers: ServerEntry[];
   activeServerUrl: string;
-  rememberMe: boolean;
 }
 
 const STORE_NAME = "cui-desktop-store.json";
@@ -35,7 +32,6 @@ export async function getSettings(): Promise<AppSettings> {
   return settings ?? {
     servers: [],
     activeServerUrl: "",
-    rememberMe: true,
   };
 }
 
@@ -46,24 +42,23 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   await store.save();
 }
 
-/** Save a server entry (called after successful login) */
-export async function saveServer(server: ServerEntry): Promise<void> {
+/** Save or update a server entry */
+export async function saveServer(entry: ServerEntry): Promise<void> {
   const settings = await getSettings();
-  const idx = settings.servers.findIndex((s) => s.url === server.url);
+  const idx = settings.servers.findIndex((s) => s.url === entry.url);
   if (idx >= 0) {
-    settings.servers[idx] = server;
+    settings.servers[idx] = entry;
   } else {
-    settings.servers.push(server);
+    settings.servers.push(entry);
   }
-  settings.activeServerUrl = server.url;
+  settings.activeServerUrl = entry.url;
   await saveSettings(settings);
 }
 
-/** Get the active server entry */
-export async function getActiveServer(): Promise<ServerEntry | null> {
+/** Get the active server URL */
+export async function getActiveServerUrl(): Promise<string> {
   const settings = await getSettings();
-  if (!settings.activeServerUrl) return null;
-  return settings.servers.find((s) => s.url === settings.activeServerUrl) ?? null;
+  return settings.activeServerUrl;
 }
 
 /** Remove a server entry */

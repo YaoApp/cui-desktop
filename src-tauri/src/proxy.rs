@@ -13,28 +13,11 @@ use std::path::PathBuf;
 
 use crate::config::{self, get_proxy_state};
 
-/// Path prefixes that should be proxied to the remote Yao server
-const PROXY_PREFIXES: &[&str] = &[
-    "/v1/",
-    "/api/",
-    "/.well-known/",
-    "/components/",
-    "/assets/",
-    "/iframe/",
-    "/ai/",
-    "/agents/",
-    "/docs/",
-    "/tools/",
-    "/brands/",
-    "/admin/",
-];
-
 /// Max request body size: 512 MB
 const MAX_BODY_SIZE: usize = 512 * 1024 * 1024;
 
-/// Start the local proxy server
-pub async fn start_proxy_server(cui_dist_path: PathBuf) -> Result<u16, String> {
-    let port: u16 = 19840;
+/// Start the local proxy server on the given port
+pub async fn start_proxy_server(cui_dist_path: PathBuf, port: u16) -> Result<u16, String> {
 
     let client = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -61,7 +44,11 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf) -> Result<u16, String> {
         .map_err(|e| format!("Failed to bind port {}: {}", port, e))?;
 
     info!("Proxy server started at http://127.0.0.1:{}", port);
-    config::set_proxy_running(true);
+    {
+        let mut state = config::PROXY_STATE.write();
+        state.running = true;
+        state.port = port;
+    }
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -73,7 +60,9 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf) -> Result<u16, String> {
     Ok(port)
 }
 
-/// Route handler: proxy API requests or serve CUI static files
+/// Route handler:
+///   /__yao_admin_root/* → local CUI static files
+///   Everything else     → proxy to remote server (same-origin guarantee)
 async fn handle_request(
     req: Request,
     client: Client,
@@ -81,12 +70,7 @@ async fn handle_request(
 ) -> Response {
     let path = req.uri().path();
 
-    // API requests → proxy to remote server
-    if should_proxy(path) {
-        return proxy_request(req, client).await;
-    }
-
-    // CUI static assets
+    // CUI static assets — served locally
     if path.starts_with("/__yao_admin_root/") {
         return serve_cui_static(path, &cui_dist).await;
     }
@@ -109,28 +93,11 @@ async fn handle_request(
             .unwrap();
     }
 
-    // 404
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not Found"))
-        .unwrap()
-}
-
-/// Check whether a path should be proxied to the remote server
-fn should_proxy(path: &str) -> bool {
-    for prefix in PROXY_PREFIXES {
-        if path.starts_with(prefix) {
-            return true;
-        }
-    }
-    // Match paths without trailing slash (e.g. /v1, /api)
-    let path_with_slash = format!("{}/", path);
-    for prefix in PROXY_PREFIXES {
-        if path_with_slash == *prefix {
-            return true;
-        }
-    }
-    false
+    // Everything else → proxy to remote server
+    // This covers /v1/*, /api/*, /web/*, /components/*, /assets/*,
+    // /ai/*, /agents/*, /docs/*, /tools/*, /brands/*, /admin/*,
+    // /iframe/*, /.well-known/*, and any SUI server-rendered pages.
+    proxy_request(req, client).await
 }
 
 /// Forward a request to the remote Yao server
@@ -153,6 +120,7 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     let remote_base = state.server_url.trim_end_matches('/').to_string();
     let target_url = format!("{}{}", remote_base, path_and_query);
 
+    let local_base = format!("http://127.0.0.1:{}", state.port);
     debug!("Proxy: {} {}", method, target_url);
 
     // Build upstream request
@@ -177,7 +145,7 @@ async fn proxy_request(req: Request, client: Client) -> Response {
         }
         if name_str == "referer" {
             if let Ok(v) = value.to_str() {
-                let rewritten = v.replace("http://127.0.0.1:19840", &remote_base);
+                let rewritten = v.replace(&local_base, &remote_base);
                 builder = builder.header("Referer", rewritten);
                 continue;
             }
@@ -263,7 +231,7 @@ async fn proxy_request(req: Request, client: Client) -> Response {
         if is_redirect && name_str == "location" {
             if let Ok(loc) = value.to_str() {
                 if loc.starts_with(&remote_base) {
-                    let local_loc = loc.replacen(&remote_base, "http://127.0.0.1:19840", 1);
+                    let local_loc = loc.replacen(&remote_base, &local_base, 1);
                     response_builder = response_builder.header("location", local_loc);
                     continue;
                 }

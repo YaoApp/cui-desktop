@@ -7,6 +7,8 @@ export default defineConfig(async () => ({
   clearScreen: false,
   build: {
     outDir: "build",
+    minify: false,
+    sourcemap: true,
   },
   server: {
     port: 1420,

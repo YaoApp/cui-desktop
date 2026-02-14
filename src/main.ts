@@ -1,11 +1,11 @@
 import { route, initRouter } from "./lib/router";
-import { renderLogin } from "./pages/login";
+import { renderServers } from "./pages/servers";
 import { renderSettings } from "./pages/settings";
 import { renderApp } from "./pages/app";
 
-// Register routes
-route("/", renderLogin);
-route("/login", renderLogin);
+// Routes
+route("/", renderServers);
+route("/servers", renderServers);
 route("/settings", renderSettings);
 route("/app", renderApp);
 
