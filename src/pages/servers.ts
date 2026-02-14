@@ -4,7 +4,7 @@ import { navigate } from "../lib/router";
 import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
 
 const DEFAULT_CONF: AppConf = {
-  name: "Yao Desktop",
+  name: "Yao Agents",
   logo: "",
   port: 15099,
   theme: { primaryColor: "#3373fc" },
@@ -46,6 +46,7 @@ export async function renderServers(): Promise<void> {
         <div class="servers-brand">
           <img src="${esc(logoSrc)}" alt="" class="brand-logo" />
           <h1 class="brand-name">${escapeHtml(conf.name)}</h1>
+          <a class="brand-link" href="https://yaoagents.com" target="_blank">yaoagents.com</a>
         </div>
 
         <div id="alert-area"></div>

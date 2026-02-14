@@ -116,6 +116,19 @@ html, body {
   letter-spacing: -0.3px;
 }
 
+.brand-link {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.brand-link:hover {
+  color: var(--color-main);
+}
+
 /* ===== Server List ===== */
 .server-list {
   margin-bottom: 20px;

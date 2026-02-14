@@ -4,7 +4,13 @@ mod config;
 mod proxy;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    Manager, WebviewUrl, WebviewWindowBuilder,
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    image::Image,
+    WindowEvent,
+};
 use tauri::webview::NewWindowResponse;
 use tracing::{info, debug, warn};
 use tracing_subscriber::EnvFilter;
@@ -28,6 +34,9 @@ pub fn run() {
             // Load developer config.json at startup
             load_app_conf_from_resources(app.handle());
 
+            // ── System Tray ──
+            setup_tray(app)?;
+
             // Channel for navigation redirect requests (main window)
             let (tx, rx) = std::sync::mpsc::channel::<String>();
 
@@ -40,7 +49,7 @@ pub fn run() {
                     "main",
                     WebviewUrl::App("index.html".into()),
                 )
-                .title("Yao Desktop")
+                .title("Yao Agents")
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(900.0, 600.0)
                 .center()
@@ -122,7 +131,7 @@ pub fn run() {
                             &label,
                             WebviewUrl::External(parsed),
                         )
-                        .title("Yao Desktop")
+                        .title("Yao Agents")
                         .inner_size(1100.0, 780.0)
                         .min_inner_size(600.0, 400.0)
                         .center()
@@ -157,6 +166,19 @@ pub fn run() {
 
             Ok(())
         })
+        // Intercept main window close: hide to tray instead of quitting.
+        // Popup windows close normally.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    // Hide window instead of closing
+                    let _ = window.hide();
+                    api.prevent_close();
+                    info!("Main window hidden to tray");
+                }
+                // Popup windows close normally (no prevent_close)
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_conf,
             commands::check_server,
@@ -168,6 +190,86 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("Failed to start Tauri application");
+}
+
+/// Set up the system tray icon and menu
+fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    // Load the tray-specific template icon (monochrome silhouette).
+    // macOS will auto-invert for dark/light mode when icon_as_template(true).
+    let icon = load_tray_icon(app);
+
+    let _tray = TrayIconBuilder::new()
+        .icon(icon)
+        .icon_as_template(true) // macOS: system handles dark/light mode
+        .tooltip("Yao Agents")
+        .menu(&menu)
+        .on_menu_event(|app, event| {
+            match event.id().as_ref() {
+                "show" => {
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+                "quit" => {
+                    info!("Quit from tray");
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Left-click on tray icon → show and focus main window
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event {
+                if let Some(win) = tray.app_handle().get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    info!("System tray initialized");
+    Ok(())
+}
+
+/// Load the tray icon PNG, trying multiple paths (bundled resources, dev icons/)
+fn load_tray_icon(app: &tauri::App) -> Image<'static> {
+    // Retina icon first (44x44 fallback to 88x88)
+    let candidates = ["tray-icon@2x.png", "tray-icon.png"];
+
+    // 1. Try from bundled resource directory
+    if let Ok(resource_dir) = app.handle().path().resource_dir() {
+        for name in &candidates {
+            let path = resource_dir.join("icons").join(name);
+            if let Ok(img) = Image::from_path(&path) {
+                info!("Tray icon loaded from: {:?}", path);
+                return img;
+            }
+        }
+    }
+
+    // 2. Try from project icons/ directory (dev mode)
+    for name in &candidates {
+        let path = std::path::PathBuf::from("icons").join(name);
+        if let Ok(img) = Image::from_path(&path) {
+            info!("Tray icon loaded from: {:?}", path);
+            return img;
+        }
+    }
+
+    // 3. Fallback: generate a simple 1x1 transparent pixel icon
+    warn!("Tray icon not found, using fallback");
+    Image::from_bytes(include_bytes!("../icons/tray-icon.png")).unwrap()
 }
 
 /// Load config.json from bundled resources or project root (dev mode)

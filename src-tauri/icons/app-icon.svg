@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3371FC"/>
+      <stop offset="100%" stop-color="#4580ff"/>
+    </linearGradient>
+    <mask id="eyes">
+      <rect width="1024" height="1024" fill="white"/>
+      <!-- Left eye -->
+      <ellipse cx="407" cy="458" rx="55" ry="88" fill="black"/>
+      <!-- Right eye -->
+      <ellipse cx="620" cy="458" rx="55" ry="88" fill="black"/>
+    </mask>
+    <clipPath id="roundRect">
+      <rect width="1024" height="1024" rx="228" ry="228"/>
+    </clipPath>
+  </defs>
+  <!-- Rounded background -->
+  <rect width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+  <!-- Robot silhouette in white with eye cutouts, clipped to rounded rect -->
+  <g clip-path="url(#roundRect)">
+    <path d="M486.884,189.207 C495.1615,188.4345 505.165,188.919 513.59,188.864 C599.61,188.302 684.55,217.9475 749.645,274.6415 C820.74,337.335 864.11,425.629 870.28,520.215 C874.69,585.13 864.71,657.9 819.94,708.215 C766.135,768.695 672.935,788.13 595.875,795.7 C576.14,797.64 557.055,797.635 537.68,798.92 C436.9495,800.75 298.6425,791.955 218.4915,723.25 C173.8735,685 156.2745,627.825 152.411,570.625 C145.8345,474.4635 177.8325,379.6425 241.3305,307.127 C292.7155,248.288 362.5635,208.649 439.428,194.7065 C455.6785,191.7125 470.5135,190.32 486.884,189.207 Z"
+      fill="rgba(255,255,255,0.18)" mask="url(#eyes)"/>
+  </g>
+</svg>

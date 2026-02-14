@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui-dev/tauri-v2-schema/main/tauri.conf.json",
-  "productName": "Yao Desktop",
+  "productName": "Yao Agents",
   "version": "0.1.0",
   "identifier": "com.yaoapps.cui-desktop",
   "build": {
@@ -28,7 +28,9 @@
     "targets": "all",
     "resources": {
       "../cui-dist": "cui-dist",
-      "../config.json": "config.json"
+      "../config.json": "config.json",
+      "icons/tray-icon.png": "icons/tray-icon.png",
+      "icons/tray-icon@2x.png": "icons/tray-icon@2x.png"
     },
     "icon": [
       "icons/32x32.png",
