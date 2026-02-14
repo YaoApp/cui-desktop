@@ -1,0 +1,417 @@
+use axum::{
+    Router,
+    body::Body,
+    extract::Request,
+    response::Response,
+};
+use http::{header, HeaderValue, StatusCode};
+use reqwest::Client;
+use tower_http::cors::CorsLayer;
+use tokio::net::TcpListener;
+use tracing::{info, error, warn, debug};
+use std::path::PathBuf;
+
+use crate::config::{self, get_proxy_state};
+
+/// Path prefixes that should be proxied to the remote Yao server
+const PROXY_PREFIXES: &[&str] = &[
+    "/v1/",
+    "/api/",
+    "/.well-known/",
+    "/components/",
+    "/assets/",
+    "/iframe/",
+    "/ai/",
+    "/agents/",
+    "/docs/",
+    "/tools/",
+    "/brands/",
+    "/admin/",
+];
+
+/// Max request body size: 512 MB
+const MAX_BODY_SIZE: usize = 512 * 1024 * 1024;
+
+/// Start the local proxy server
+pub async fn start_proxy_server(cui_dist_path: PathBuf) -> Result<u16, String> {
+    let port: u16 = 19840;
+
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let cui_dist = cui_dist_path.clone();
+
+    let app = Router::new()
+        .fallback(move |req: Request| {
+            let client = client.clone();
+            let cui_dist = cui_dist.clone();
+            async move {
+                handle_request(req, client, cui_dist).await
+            }
+        })
+        .layer(
+            CorsLayer::very_permissive()
+        );
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        .await
+        .map_err(|e| format!("Failed to bind port {}: {}", port, e))?;
+
+    info!("Proxy server started at http://127.0.0.1:{}", port);
+    config::set_proxy_running(true);
+
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Proxy server error: {}", e);
+            config::set_proxy_running(false);
+        }
+    });
+
+    Ok(port)
+}
+
+/// Route handler: proxy API requests or serve CUI static files
+async fn handle_request(
+    req: Request,
+    client: Client,
+    cui_dist: PathBuf,
+) -> Response {
+    let path = req.uri().path();
+
+    // API requests → proxy to remote server
+    if should_proxy(path) {
+        return proxy_request(req, client).await;
+    }
+
+    // CUI static assets
+    if path.starts_with("/__yao_admin_root/") {
+        return serve_cui_static(path, &cui_dist).await;
+    }
+
+    // Redirect /__yao_admin_root (no trailing slash)
+    if path == "/__yao_admin_root" {
+        return Response::builder()
+            .status(StatusCode::MOVED_PERMANENTLY)
+            .header(header::LOCATION, "/__yao_admin_root/")
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    // Root → redirect to CUI
+    if path == "/" {
+        return Response::builder()
+            .status(StatusCode::TEMPORARY_REDIRECT)
+            .header(header::LOCATION, "/__yao_admin_root/")
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    // 404
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("Not Found"))
+        .unwrap()
+}
+
+/// Check whether a path should be proxied to the remote server
+fn should_proxy(path: &str) -> bool {
+    for prefix in PROXY_PREFIXES {
+        if path.starts_with(prefix) {
+            return true;
+        }
+    }
+    // Match paths without trailing slash (e.g. /v1, /api)
+    let path_with_slash = format!("{}/", path);
+    for prefix in PROXY_PREFIXES {
+        if path_with_slash == *prefix {
+            return true;
+        }
+    }
+    false
+}
+
+/// Forward a request to the remote Yao server
+async fn proxy_request(req: Request, client: Client) -> Response {
+    let state = get_proxy_state();
+
+    if state.server_url.is_empty() {
+        return Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(Body::from("Proxy server URL not configured"))
+            .unwrap();
+    }
+
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let path_and_query = uri.path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let remote_base = state.server_url.trim_end_matches('/').to_string();
+    let target_url = format!("{}{}", remote_base, path_and_query);
+
+    debug!("Proxy: {} {}", method, target_url);
+
+    // Build upstream request
+    let mut builder = client.request(method, &target_url);
+
+    // Copy headers (skip hop-by-hop and browser cookies)
+    for (name, value) in req.headers() {
+        let name_str = name.as_str().to_lowercase();
+        if name_str == "host"
+            || name_str == "connection"
+            || name_str == "transfer-encoding"
+            || name_str == "cookie"  // Browser cookies are ignored; jar handles this
+        {
+            continue;
+        }
+        // Rewrite Origin/Referer to remote server (avoid CORS rejection)
+        if name_str == "origin" {
+            if let Ok(v) = HeaderValue::from_str(&remote_base) {
+                builder = builder.header("Origin", v);
+            }
+            continue;
+        }
+        if name_str == "referer" {
+            if let Ok(v) = value.to_str() {
+                let rewritten = v.replace("http://127.0.0.1:19840", &remote_base);
+                builder = builder.header("Referer", rewritten);
+                continue;
+            }
+        }
+        if let Ok(v) = value.to_str() {
+            builder = builder.header(name.as_str(), v);
+        }
+    }
+
+    // Inject cookies from the local cookie jar
+    let jar_cookies = config::get_cookies_header(path_and_query);
+    if !jar_cookies.is_empty() {
+        debug!("Injecting cookies: {}", &jar_cookies[..jar_cookies.len().min(80)]);
+        builder = builder.header("Cookie", &jar_cookies);
+    }
+
+    // Inject auth token (if obtained via client-side login)
+    if !state.token.is_empty() {
+        builder = builder.header("Authorization", format!("Bearer {}", state.token));
+    }
+
+    // Read request body
+    let body_bytes = match axum::body::to_bytes(req.into_body(), MAX_BODY_SIZE).await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("Failed to read request body: {}", e);
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from(format!("Failed to read request body: {}", e)))
+                .unwrap();
+        }
+    };
+
+    if !body_bytes.is_empty() {
+        builder = builder.body(body_bytes.to_vec());
+    }
+
+    // Send request to upstream
+    let upstream_resp = match builder.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Proxy request failed: {} -> {}", target_url, e);
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::from(format!("Proxy request failed: {}", e)))
+                .unwrap();
+        }
+    };
+
+    // Build response
+    let status = upstream_resp.status();
+    let mut response_builder = Response::builder().status(status.as_u16());
+
+    let is_sse = upstream_resp.headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream"))
+        .unwrap_or(false);
+
+    let is_redirect = status.is_redirection();
+
+    // Copy response headers; intercept Set-Cookie into jar, rewrite Location
+    for (name, value) in upstream_resp.headers() {
+        let name_str = name.as_str().to_lowercase();
+
+        // Skip hop-by-hop headers
+        if name_str == "transfer-encoding"
+            || name_str == "connection"
+        {
+            continue;
+        }
+
+        // Intercept Set-Cookie → store in cookie jar, do NOT forward to browser
+        if name_str == "set-cookie" {
+            if let Ok(cookie_str) = value.to_str() {
+                info!("Intercepted cookie: {}", &cookie_str[..cookie_str.len().min(100)]);
+                config::store_cookie(cookie_str);
+            }
+            continue;
+        }
+
+        // Rewrite absolute URLs in Location header
+        if is_redirect && name_str == "location" {
+            if let Ok(loc) = value.to_str() {
+                if loc.starts_with(&remote_base) {
+                    let local_loc = loc.replacen(&remote_base, "http://127.0.0.1:19840", 1);
+                    response_builder = response_builder.header("location", local_loc);
+                    continue;
+                }
+            }
+        }
+
+        response_builder = response_builder.header(name.as_str(), value.clone());
+    }
+
+    if is_sse {
+        // SSE: stream without buffering
+        response_builder = response_builder
+            .header("Cache-Control", "no-cache")
+            .header("X-Accel-Buffering", "no");
+
+        let stream = upstream_resp.bytes_stream();
+        let body = Body::from_stream(stream);
+        response_builder.body(body).unwrap_or_else(|e| {
+            error!("Failed to build SSE response: {}", e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Failed to build response"))
+                .unwrap()
+        })
+    } else {
+        // Normal response: read full body
+        match upstream_resp.bytes().await {
+            Ok(body) => {
+                let len = body.len();
+                response_builder = response_builder.header("content-length", len);
+                response_builder.body(Body::from(body)).unwrap_or_else(|e| {
+                    error!("Failed to build response: {}", e);
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Failed to build response"))
+                        .unwrap()
+                })
+            }
+            Err(e) => {
+                error!("Failed to read upstream response: {}", e);
+                Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .body(Body::from(format!("Failed to read upstream response: {}", e)))
+                    .unwrap()
+            }
+        }
+    }
+}
+
+/// Serve CUI static files from the build output directory
+async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
+    // Strip /__yao_admin_root/ prefix
+    let relative = path.strip_prefix("/__yao_admin_root/").unwrap_or("");
+    let relative = if relative.is_empty() { "index.html" } else { relative };
+
+    let file_path = cui_dist.join(relative);
+
+    // Path traversal protection
+    let canonical = match file_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // File not found → serve index.html (SPA routing)
+            let index = cui_dist.join("index.html");
+            if !index.exists() {
+                return serve_cui_not_built();
+            }
+            index
+        }
+    };
+
+    // Ensure path is within cui_dist
+    let cui_dist_canonical = cui_dist.canonicalize().unwrap_or_else(|_| cui_dist.clone());
+    if !canonical.starts_with(&cui_dist_canonical) {
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::from("Forbidden"))
+            .unwrap();
+    }
+
+    // Directory → serve index.html (SPA routing)
+    let file_path = if canonical.is_file() {
+        canonical
+    } else {
+        let index = cui_dist.join("index.html");
+        if !index.exists() {
+            return serve_cui_not_built();
+        }
+        index
+    };
+
+    match tokio::fs::read(&file_path).await {
+        Ok(contents) => {
+            let mime = guess_mime(&file_path);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", mime)
+                .header("Cache-Control", "public, max-age=3600")
+                .body(Body::from(contents))
+                .unwrap()
+        }
+        Err(e) => {
+            warn!("Failed to read file: {:?} -> {}", file_path, e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Failed to read file"))
+                .unwrap()
+        }
+    }
+}
+
+/// Placeholder page when CUI has not been built yet
+fn serve_cui_not_built() -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .body(Body::from(
+            r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5">
+<div style="text-align:center">
+<h2>CUI Not Built</h2>
+<p>Please run <code>npm run build-cui</code> to build CUI static assets first.</p>
+</div>
+</body></html>"#
+        ))
+        .unwrap()
+}
+
+/// Guess MIME type from file extension
+fn guess_mime(path: &PathBuf) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("eot") => "application/vnd.ms-fontobject",
+        Some("wasm") => "application/wasm",
+        Some("map") => "application/json",
+        Some("txt") => "text/plain; charset=utf-8",
+        Some("xml") => "application/xml; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}

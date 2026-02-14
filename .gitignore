@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Rust build artifacts
+src-tauri/target/
+
+# Vite build output
+build/
+
+# Release / distribution bundles
+dist/
+
+# CUI source (cloned from GitHub, not our code)
+cui/
+
+# CUI build output (generated from CUI source)
+cui-dist/
+
+# Cargo lock (regenerated from Cargo.toml)
+src-tauri/Cargo.lock
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.*
+.env.local
+.env.*.local
+
+# Tauri dev artifacts
+src-tauri/gen/
