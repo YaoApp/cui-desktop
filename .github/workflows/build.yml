@@ -22,7 +22,7 @@ jobs:
           - platform: macos-latest    # Apple Silicon (arm64)
             target: aarch64-apple-darwin
             artifact: macos-arm64
-          - platform: macos-13        # Intel Mac (x86_64)
+          - platform: macos-latest    # Cross-compile x86_64 on arm64 runner
             target: x86_64-apple-darwin
             artifact: macos-x86_64
           - platform: windows-latest
