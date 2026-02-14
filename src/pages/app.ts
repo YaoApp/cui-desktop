@@ -1,6 +1,6 @@
 import { getProxyStatus, setPreferenceCookies } from "../lib/api";
 import { navigate } from "../lib/router";
-import { t, getLocaleForCUI } from "../lib/i18n";
+import { t, getLocaleForCUI, getThemeForCUI } from "../lib/i18n";
 
 const CUI_PATH = "/__yao_admin_root/";
 
@@ -28,17 +28,20 @@ export async function renderApp(): Promise<void> {
     </div>
   `;
 
-  // Detect system locale and theme, store in proxy cookie jar.
-  // The proxy will inject these as Set-Cookie when serving CUI pages,
-  // so CUI JavaScript can read them immediately without a jarring switch.
+  // Store locale/theme in the proxy cookie jar (for server-side cookie injection),
+  // then navigate to the bridge page which writes umi_locale into localStorage
+  // on the proxy origin before redirecting to CUI. This guarantees CUI's umi
+  // framework picks up the correct language on first load without a reload.
   const locale = getLocaleForCUI();
-  const theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "";
+  const cuiLocale = locale === "zh-cn" ? "zh-CN" : "en-US";
+  const theme = getThemeForCUI();
   try {
     await setPreferenceCookies(locale, theme);
   } catch { /* ignore */ }
 
   setTimeout(() => {
-    window.location.href = `http://127.0.0.1:${port}${CUI_PATH}`;
+    const bridge = `http://127.0.0.1:${port}/__yao_bridge?locale=${encodeURIComponent(cuiLocale)}&theme=${encodeURIComponent(theme)}`;
+    window.location.href = bridge;
   }, 300);
 }
 

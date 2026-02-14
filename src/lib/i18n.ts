@@ -1,7 +1,13 @@
-/** Simple i18n module — detects system language and provides translations */
+/**
+ * i18n + theme module
+ *
+ * Priority: user override (localStorage) > system default
+ * Persisted keys: "cui_lang" ("zh"|"en"), "cui_theme" ("light"|"dark")
+ */
+
+// ===== Translations =====
 
 const zhCN: Record<string, string> = {
-  // Server selection page
   "app.no_servers": "尚未添加服务器",
   "app.add_server": "+ 添加服务器",
   "app.server_url_placeholder": "服务器地址，如 https://app.example.com",
@@ -19,7 +25,6 @@ const zhCN: Record<string, string> = {
   "app.settings": "设置",
   "app.loading_cui": "正在加载 CUI…",
 
-  // Settings page
   "settings.title": "设置",
   "settings.back": "← 返回",
   "settings.proxy": "代理",
@@ -81,22 +86,61 @@ const translations: Record<string, Record<string, string>> = {
   en: enUS,
 };
 
-/** Detect system language, returns "zh" or "en" */
-export function detectLang(): string {
-  const lang = navigator.language || "en";
-  if (lang.startsWith("zh")) return "zh";
-  return "en";
+// ===== Language =====
+
+const LANG_KEY = "cui_lang";
+
+/** Get the current language: user override > system */
+export function getLang(): string {
+  const saved = localStorage.getItem(LANG_KEY);
+  if (saved === "zh" || saved === "en") return saved;
+  const sys = navigator.language || "en";
+  return sys.startsWith("zh") ? "zh" : "en";
+}
+
+/** Set language override and persist */
+export function setLang(lang: string): void {
+  localStorage.setItem(LANG_KEY, lang);
 }
 
 /** Get locale string for CUI cookie (e.g. "zh-cn", "en-us") */
 export function getLocaleForCUI(): string {
-  const lang = navigator.language || "en-US";
-  if (lang.startsWith("zh")) return "zh-cn";
-  return "en-us";
+  return getLang() === "zh" ? "zh-cn" : "en-us";
 }
 
 /** Translate a key */
 export function t(key: string): string {
-  const lang = detectLang();
+  const lang = getLang();
   return translations[lang]?.[key] ?? translations["en"]?.[key] ?? key;
 }
+
+// ===== Theme =====
+
+const THEME_KEY = "cui_theme";
+
+/** Get the current theme: user override > system */
+export function getTheme(): string {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+/** Set theme override and persist */
+export function setTheme(theme: string): void {
+  localStorage.setItem(THEME_KEY, theme);
+  applyTheme();
+}
+
+/** Apply theme to document (adds/removes data-theme attribute) */
+export function applyTheme(): void {
+  const theme = getTheme();
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
+/** Get theme value for CUI cookie: "dark" or "" (empty = light) */
+export function getThemeForCUI(): string {
+  return getTheme() === "dark" ? "dark" : "";
+}
+
+// Apply on load
+applyTheme();

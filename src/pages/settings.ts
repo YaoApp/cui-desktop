@@ -7,7 +7,7 @@ import { t } from "../lib/i18n";
 export async function renderSettings(): Promise<void> {
   const app = document.getElementById("app")!;
 
-  let appName = "Yao CUI Desktop";
+  let appName = "Yao Desktop";
   try {
     const c = await getAppConf();
     appName = c.name;

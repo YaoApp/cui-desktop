@@ -1,10 +1,10 @@
 import { getAppConf, checkServer, startProxy, type AppConf } from "../lib/api";
 import { getSettings, saveServer, removeServer, type ServerEntry } from "../lib/store";
 import { navigate } from "../lib/router";
-import { t } from "../lib/i18n";
+import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
 
 const DEFAULT_CONF: AppConf = {
-  name: "Yao CUI Desktop",
+  name: "Yao Desktop",
   logo: "",
   port: 15099,
   theme: { primaryColor: "#3373fc" },
@@ -75,6 +75,17 @@ export async function renderServers(): Promise<void> {
 
         <div class="servers-bottom">
           <a href="#" id="goto-settings">${escapeHtml(t("app.settings"))}</a>
+          <div class="pref-toolbar">
+            <button class="pref-btn" id="toggle-theme" title="Toggle theme">
+              <span class="pref-icon">${getTheme() === "dark" ? "☀️" : "🌙"}</span>
+              <span>${getTheme() === "dark" ? "Light" : "Dark"}</span>
+            </button>
+            <span class="pref-sep"></span>
+            <button class="pref-btn" id="toggle-lang" title="Switch language">
+              <span class="pref-icon">🌐</span>
+              <span>${getLang() === "zh" ? "English" : "中文"}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -145,6 +156,18 @@ function bind(conf: AppConf) {
   document.getElementById("goto-settings")!.addEventListener("click", (e) => {
     e.preventDefault();
     navigate("/settings");
+  });
+
+  // Theme toggle
+  document.getElementById("toggle-theme")!.addEventListener("click", () => {
+    setTheme(getTheme() === "dark" ? "light" : "dark");
+    renderServers(); // re-render to update button label
+  });
+
+  // Language toggle
+  document.getElementById("toggle-lang")!.addEventListener("click", () => {
+    setLang(getLang() === "zh" ? "en" : "zh");
+    renderServers(); // re-render with new language
   });
 }
 

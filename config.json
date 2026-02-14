@@ -1,5 +1,5 @@
 {
-  "name": "Yao CUI Desktop",
+  "name": "Yao Desktop",
   "logo": "",
   "port": 15099,
   "theme": {
@@ -15,7 +15,7 @@
   "servers": [
     {
       "url": "http://127.0.0.1:5099",
-      "label": "Local Dev Server"
+      "label": "Local Server"
     }
   ]
 }

@@ -38,35 +38,33 @@
   --font-mono: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
-/* ===== Dark Mode ===== */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #0a0a0f;
-    --color-bg-nav: #16161e;
-    --color-border: #2a2a36;
-    --color-text: #e4e4e8;
-    --color-text-secondary: #9ca3af;
-    --color-text-muted: #6b7280;
-    --color-input-bg: #1e1e28;
-    --color-hover-bg: #1e1e28;
-    --color-alert-error-bg: #2d1215;
-    --color-alert-error-border: #5c1d24;
-    --color-alert-error-text: #fca5a5;
-    --color-alert-success-bg: #0d2818;
-    --color-alert-success-border: #16532b;
-    --color-alert-success-text: #6ee7b7;
-    --color-alert-info-bg: #0c1a30;
-    --color-alert-info-border: #1e3a5f;
-    --color-alert-info-text: #93c5fd;
-    --color-badge-bg: #2a2a36;
-    --color-icon-hover-bg: #2d1215;
-    --color-status-online-bg: #0d2818;
-    --color-status-online-text: #6ee7b7;
-    --color-status-offline-bg: #2d1215;
-    --color-status-offline-text: #fca5a5;
-    --shadow: 0 2px 8px rgba(0,0,0,0.3);
-    --shadow-lg: 0 8px 30px rgba(0,0,0,0.4);
-  }
+/* ===== Dark Mode (via data-theme attribute set by JS) ===== */
+[data-theme="dark"] {
+  --color-bg: #0a0a0f;
+  --color-bg-nav: #16161e;
+  --color-border: #2a2a36;
+  --color-text: #e4e4e8;
+  --color-text-secondary: #9ca3af;
+  --color-text-muted: #6b7280;
+  --color-input-bg: #1e1e28;
+  --color-hover-bg: #1e1e28;
+  --color-alert-error-bg: #2d1215;
+  --color-alert-error-border: #5c1d24;
+  --color-alert-error-text: #fca5a5;
+  --color-alert-success-bg: #0d2818;
+  --color-alert-success-border: #16532b;
+  --color-alert-success-text: #6ee7b7;
+  --color-alert-info-bg: #0c1a30;
+  --color-alert-info-border: #1e3a5f;
+  --color-alert-info-text: #93c5fd;
+  --color-badge-bg: #2a2a36;
+  --color-icon-hover-bg: #2d1215;
+  --color-status-online-bg: #0d2818;
+  --color-status-online-text: #6ee7b7;
+  --color-status-offline-bg: #2d1215;
+  --color-status-offline-text: #fca5a5;
+  --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  --shadow-lg: 0 8px 30px rgba(0,0,0,0.4);
 }
 
 html, body {
@@ -152,10 +150,8 @@ html, body {
   background: rgba(51, 115, 252, 0.06);
 }
 
-@media (prefers-color-scheme: dark) {
-  .server-item.active {
-    background: rgba(51, 115, 252, 0.12);
-  }
+[data-theme="dark"] .server-item.active {
+  background: rgba(51, 115, 252, 0.12);
 }
 
 .server-info { flex: 1; min-width: 0; }
@@ -516,4 +512,45 @@ html, body {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== Preference Toolbar ===== */
+.pref-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding-top: 14px;
+}
+
+.pref-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--font);
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+  line-height: 1.4;
+}
+
+.pref-btn:hover {
+  color: var(--color-text-secondary);
+  border-color: var(--color-text-muted);
+}
+
+.pref-btn .pref-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pref-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--color-border);
 }

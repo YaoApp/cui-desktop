@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Yao CUI Desktop</title>
+    <title>Yao Desktop</title>
     <link rel="stylesheet" href="/src/styles/global.css" />
     <style>
       #boot-error {
@@ -20,10 +20,8 @@
         border-radius: 8px; font-size: 12px; overflow: auto;
         max-height: 60vh; white-space: pre-wrap; word-break: break-all;
       }
-      @media (prefers-color-scheme: dark) {
-        #boot-error { background: #0a0a0f; color: #e4e4e8; }
-        #boot-error pre { background: #16161e; }
-      }
+      [data-theme="dark"] #boot-error { background: #0a0a0f; color: #e4e4e8; }
+      [data-theme="dark"] #boot-error pre { background: #16161e; }
     </style>
   </head>
   <body>

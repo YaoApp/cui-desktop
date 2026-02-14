@@ -70,6 +70,12 @@ async fn handle_request(
 ) -> Response {
     let path = req.uri().path();
 
+    // Bridge page: sets localStorage on the proxy origin, then redirects to CUI.
+    // This guarantees umi_locale / __theme are written before CUI JS ever runs.
+    if path == "/__yao_bridge" {
+        return serve_bridge_page(&req);
+    }
+
     // CUI static assets — served locally
     if path.starts_with("/__yao_admin_root/") {
         return serve_cui_static(path, &cui_dist).await;
@@ -299,6 +305,66 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     }
 }
 
+/// Serve a tiny bridge page that writes preferences into localStorage
+/// on the proxy origin, then immediately redirects to CUI.
+/// Query params: ?locale=zh-CN&theme=dark
+fn serve_bridge_page(req: &Request) -> Response {
+    let query = req.uri().query().unwrap_or("");
+    let mut locale = String::new();
+    let mut theme = String::new();
+    for pair in query.split('&') {
+        if let Some(v) = pair.strip_prefix("locale=") {
+            locale = v.to_string();
+        } else if let Some(v) = pair.strip_prefix("theme=") {
+            theme = v.to_string();
+        }
+    }
+
+    // Build a minimal HTML page that:
+    //  1) writes umi_locale, xgen:xgen_theme, __theme into localStorage
+    //  2) sets __theme + __locale as browser cookies (for SUI server-rendered pages)
+    //  3) immediately navigates to CUI
+    // CUI reads: umi_locale for language, xgen:xgen_theme for theme (xgen format)
+    // SUI reads: __theme / __locale cookies (server-side rendering)
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Loading…</title>
+<script>
+try {{
+  // CUI (umi) language
+  if ("{locale}") {{
+    localStorage.setItem("umi_locale", "{locale}");
+  }}
+  // CUI (xgen) theme
+  if ("{theme}") {{
+    localStorage.setItem("__theme", "{theme}");
+    localStorage.setItem("xgen:xgen_theme", JSON.stringify({{type:"String",value:"{theme}"}}));
+  }} else {{
+    localStorage.removeItem("__theme");
+    localStorage.removeItem("xgen:xgen_theme");
+  }}
+  // Browser cookies for SUI server-rendered pages
+  var exp = "max-age=31536000;path=/;SameSite=Lax";
+  if ("{locale_cookie}") document.cookie = "__locale={locale_cookie};" + exp;
+  if ("{theme}") document.cookie = "__theme={theme};" + exp;
+  else document.cookie = "__theme=;max-age=0;path=/";
+}} catch(e) {{}}
+location.replace("/__yao_admin_root/");
+</script>
+</head><body></body></html>"#,
+        locale = locale,
+        theme = theme,
+        locale_cookie = if locale == "zh-CN" { "zh-cn" } else if locale == "en-US" { "en-us" } else { &locale },
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .body(Body::from(html))
+        .unwrap()
+}
+
 /// Serve CUI static files from the build output directory
 async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
     // Strip /__yao_admin_root/ prefix
@@ -343,15 +409,17 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
     match tokio::fs::read(&file_path).await {
         Ok(contents) => {
             let mime = guess_mime(&file_path);
+            let is_html = mime.starts_with("text/html");
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime)
-                .header("Cache-Control", "public, max-age=3600");
+                .header("Cache-Control", if is_html { "no-cache" } else { "public, max-age=3600" });
 
-            // For HTML pages (e.g. index.html), inject preference cookies
-            // so CUI JavaScript can read __locale and __theme from document.cookie
-            if mime.starts_with("text/html") {
+            if is_html {
+                // Inject preference cookies (Set-Cookie) so browser JS can read them
                 let jar = config::COOKIE_JAR.read();
+                let mut locale_value = String::new();
+                let mut theme_value = String::new();
                 for c in jar.iter() {
                     if c.name == "__locale" || c.name == "__theme" {
                         let cookie_str = format!(
@@ -361,8 +429,46 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                         if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
                             builder = builder.header("Set-Cookie", hv);
                         }
+                        if c.name == "__locale" { locale_value = c.value.clone(); }
+                        if c.name == "__theme"  { theme_value = c.value.clone(); }
                     }
                 }
+                drop(jar);
+
+                // Inject a synchronous <script> into the HTML to sync preferences
+                // to localStorage BEFORE any other scripts run.
+                // CUI (umi-based) reads language from localStorage key "umi_locale".
+                // Map: "zh-cn" → "zh-CN", "en-us" → "en-US"
+                let umi_locale = match locale_value.as_str() {
+                    "zh-cn" => "zh-CN",
+                    "en-us" => "en-US",
+                    "ja-jp" => "ja-JP",
+                    _ if !locale_value.is_empty() => "en-US",
+                    _ => "",
+                };
+                // Always inject: set umi_locale and __theme if available
+                let inject_script = format!(
+                    r#"<script>try{{if("{umi}")localStorage.setItem("umi_locale","{umi}");if("{theme}")localStorage.setItem("__theme","{theme}");else localStorage.removeItem("__theme");}}catch(e){{}}</script>"#,
+                    umi = umi_locale,
+                    theme = theme_value,
+                );
+
+                let html = String::from_utf8_lossy(&contents);
+                // Insert right after <head> or <head ...> so it runs
+                // before any other <script> or <link> in <head>.
+                let modified = if let Some(head_start) = html.find("<head") {
+                    // Find the closing '>' of the <head> tag
+                    if let Some(gt) = html[head_start..].find('>') {
+                        let insert_pos = head_start + gt + 1;
+                        format!("{}{}{}", &html[..insert_pos], inject_script, &html[insert_pos..])
+                    } else {
+                        format!("{}{}", html, inject_script)
+                    }
+                } else {
+                    // No <head> tag; prepend to the whole document
+                    format!("{}{}", inject_script, html)
+                };
+                return builder.body(Body::from(modified)).unwrap();
             }
 
             builder.body(Body::from(contents)).unwrap()

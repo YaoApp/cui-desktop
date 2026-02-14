@@ -40,7 +40,7 @@ pub fn run() {
                     "main",
                     WebviewUrl::App("index.html".into()),
                 )
-                .title("Yao CUI Desktop")
+                .title("Yao Desktop")
                 .inner_size(1280.0, 860.0)
                 .min_inner_size(900.0, 600.0)
                 .center()
@@ -122,7 +122,7 @@ pub fn run() {
                             &label,
                             WebviewUrl::External(parsed),
                         )
-                        .title("Yao CUI Desktop")
+                        .title("Yao Desktop")
                         .inner_size(1100.0, 780.0)
                         .min_inner_size(600.0, 400.0)
                         .center()
