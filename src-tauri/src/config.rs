@@ -68,7 +68,7 @@ pub struct CookieEntry {
 static COOKIE_FILE: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
 
 /// Global cookie jar
-static COOKIE_JAR: Lazy<RwLock<Vec<CookieEntry>>> = Lazy::new(|| RwLock::new(Vec::new()));
+pub static COOKIE_JAR: Lazy<RwLock<Vec<CookieEntry>>> = Lazy::new(|| RwLock::new(Vec::new()));
 
 /// Set the cookie persistence file path
 pub fn set_cookie_file(path: PathBuf) {

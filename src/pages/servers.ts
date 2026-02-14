@@ -1,6 +1,7 @@
 import { getAppConf, checkServer, startProxy, type AppConf } from "../lib/api";
 import { getSettings, saveServer, removeServer, type ServerEntry } from "../lib/store";
 import { navigate } from "../lib/router";
+import { t } from "../lib/i18n";
 
 const DEFAULT_CONF: AppConf = {
   name: "Yao CUI Desktop",
@@ -36,14 +37,14 @@ export async function renderServers(): Promise<void> {
   const primary = conf.theme?.primaryColor || "#3373fc";
   document.documentElement.style.setProperty("--color-main", primary);
 
+  // Logo: use config.logo if set, otherwise default Yao icon
+  const logoSrc = conf.logo || "/icon.png";
+
   app.innerHTML = `
     <div class="page-servers">
       <div class="servers-panel fade-in">
         <div class="servers-brand">
-          ${conf.logo
-            ? `<img src="${esc(conf.logo)}" alt="" class="brand-logo" />`
-            : ""
-          }
+          <img src="${esc(logoSrc)}" alt="" class="brand-logo" />
           <h1 class="brand-name">${escapeHtml(conf.name)}</h1>
         </div>
 
@@ -52,28 +53,28 @@ export async function renderServers(): Promise<void> {
         <div class="server-list" id="server-list">
           ${allServers.length > 0
             ? allServers.map(s => serverItem(s, settings.activeServerUrl)).join("")
-            : `<div class="server-list-empty">No servers yet</div>`
+            : `<div class="server-list-empty">${escapeHtml(t("app.no_servers"))}</div>`
           }
         </div>
 
         <div class="server-add-section">
           <div id="add-toggle">
-            <button class="btn-text" id="show-add-btn">+ Add server</button>
+            <button class="btn-text" id="show-add-btn">${escapeHtml(t("app.add_server"))}</button>
           </div>
           <div id="add-form" style="display:none">
             <div class="add-form-fields">
-              <input type="text" id="add-url" placeholder="Server URL, e.g. https://app.example.com" />
-              <input type="text" id="add-label" placeholder="Name (optional)" />
+              <input type="text" id="add-url" placeholder="${esc(t("app.server_url_placeholder"))}" />
+              <input type="text" id="add-label" placeholder="${esc(t("app.server_name_placeholder"))}" />
             </div>
             <div class="add-form-actions">
-              <button class="btn-main btn-sm" id="add-ok">Add</button>
-              <button class="btn-ghost btn-sm" id="add-cancel">Cancel</button>
+              <button class="btn-main btn-sm" id="add-ok">${escapeHtml(t("app.add"))}</button>
+              <button class="btn-ghost btn-sm" id="add-cancel">${escapeHtml(t("app.cancel"))}</button>
             </div>
           </div>
         </div>
 
         <div class="servers-bottom">
-          <a href="#" id="goto-settings">Settings</a>
+          <a href="#" id="goto-settings">${escapeHtml(t("app.settings"))}</a>
         </div>
       </div>
     </div>
@@ -84,7 +85,7 @@ export async function renderServers(): Promise<void> {
 
 function serverItem(s: MergedServer, activeUrl: string): string {
   const active = s.url === activeUrl ? " active" : "";
-  const badge = s.source === "config" ? `<span class="badge-preset">Default</span>` : "";
+  const badge = s.source === "config" ? `<span class="badge-preset">${escapeHtml(t("app.default"))}</span>` : "";
 
   return `
     <div class="server-item${active}">
@@ -93,8 +94,8 @@ function serverItem(s: MergedServer, activeUrl: string): string {
         <div class="server-url">${escapeHtml(s.url)}</div>
       </div>
       <div class="server-actions">
-        <button class="btn-main btn-sm connect-btn" data-url="${esc(s.url)}" data-label="${esc(s.label)}">Connect</button>
-        ${s.source === "user" ? `<button class="btn-icon remove-btn" data-url="${esc(s.url)}" title="Remove">&times;</button>` : ""}
+        <button class="btn-main btn-sm connect-btn" data-url="${esc(s.url)}" data-label="${esc(s.label)}">${escapeHtml(t("app.connect"))}</button>
+        ${s.source === "user" ? `<button class="btn-icon remove-btn" data-url="${esc(s.url)}" title="${esc(t("app.remove"))}">&times;</button>` : ""}
       </div>
     </div>
   `;
@@ -134,7 +135,7 @@ function bind(conf: AppConf) {
 
   document.getElementById("add-ok")!.addEventListener("click", async () => {
     const url = (document.getElementById("add-url") as HTMLInputElement).value.trim();
-    if (!url) { showAlert(alertArea, "error", "Please enter a server URL."); return; }
+    if (!url) { showAlert(alertArea, "error", t("app.enter_url")); return; }
     const label = (document.getElementById("add-label") as HTMLInputElement).value.trim() || url.replace(/^https?:\/\//, "");
     await saveServer({ url, label, lastConnected: 0 });
     renderServers();
@@ -149,7 +150,7 @@ function bind(conf: AppConf) {
 
 async function doConnect(url: string, label: string, alertArea: HTMLElement) {
   document.querySelectorAll(".connect-btn").forEach(b => (b as HTMLButtonElement).disabled = true);
-  showAlert(alertArea, "info", "Connecting...");
+  showAlert(alertArea, "info", t("app.connecting"));
 
   try {
     let name = label || url.replace(/^https?:\/\//, "");
@@ -160,13 +161,13 @@ async function doConnect(url: string, label: string, alertArea: HTMLElement) {
 
     await saveServer({ url, label: name, lastConnected: Date.now() });
 
-    showAlert(alertArea, "info", "Starting proxy...");
+    showAlert(alertArea, "info", t("app.starting_proxy"));
     await startProxy(url, "", "openapi");
 
-    showAlert(alertArea, "success", "Connected! Loading CUI...");
+    showAlert(alertArea, "success", t("app.connected"));
     setTimeout(() => navigate("/app"), 300);
   } catch (err: any) {
-    showAlert(alertArea, "error", `Connection failed: ${typeof err === "string" ? err : err?.message ?? String(err)}`);
+    showAlert(alertArea, "error", `${t("app.connection_failed")}${typeof err === "string" ? err : err?.message ?? String(err)}`);
   } finally {
     document.querySelectorAll(".connect-btn").forEach(b => (b as HTMLButtonElement).disabled = false);
   }

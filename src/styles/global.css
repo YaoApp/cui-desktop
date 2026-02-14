@@ -12,6 +12,23 @@
   --color-text-muted: #9ca3af;
   --color-success: #10b981;
   --color-danger: #ef4444;
+  --color-input-bg: #f0f2f5;
+  --color-hover-bg: #f0f2f5;
+  --color-alert-error-bg: #fef2f2;
+  --color-alert-error-border: #fecaca;
+  --color-alert-error-text: #991b1b;
+  --color-alert-success-bg: #ecfdf5;
+  --color-alert-success-border: #a7f3d0;
+  --color-alert-success-text: #065f46;
+  --color-alert-info-bg: #eff6ff;
+  --color-alert-info-border: #bfdbfe;
+  --color-alert-info-text: #1e40af;
+  --color-badge-bg: #e8ecf0;
+  --color-icon-hover-bg: #fef2f2;
+  --color-status-online-bg: #ecfdf5;
+  --color-status-online-text: #065f46;
+  --color-status-offline-bg: #fef2f2;
+  --color-status-offline-text: #991b1b;
   --radius: 8px;
   --radius-lg: 12px;
   --shadow: 0 2px 8px rgba(0,0,0,0.06);
@@ -19,6 +36,37 @@
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+/* ===== Dark Mode ===== */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0a0a0f;
+    --color-bg-nav: #16161e;
+    --color-border: #2a2a36;
+    --color-text: #e4e4e8;
+    --color-text-secondary: #9ca3af;
+    --color-text-muted: #6b7280;
+    --color-input-bg: #1e1e28;
+    --color-hover-bg: #1e1e28;
+    --color-alert-error-bg: #2d1215;
+    --color-alert-error-border: #5c1d24;
+    --color-alert-error-text: #fca5a5;
+    --color-alert-success-bg: #0d2818;
+    --color-alert-success-border: #16532b;
+    --color-alert-success-text: #6ee7b7;
+    --color-alert-info-bg: #0c1a30;
+    --color-alert-info-border: #1e3a5f;
+    --color-alert-info-text: #93c5fd;
+    --color-badge-bg: #2a2a36;
+    --color-icon-hover-bg: #2d1215;
+    --color-status-online-bg: #0d2818;
+    --color-status-online-text: #6ee7b7;
+    --color-status-offline-bg: #2d1215;
+    --color-status-offline-text: #fca5a5;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+    --shadow-lg: 0 8px 30px rgba(0,0,0,0.4);
+  }
 }
 
 html, body {
@@ -57,12 +105,14 @@ html, body {
 }
 
 .brand-logo {
-  max-height: 44px;
-  margin-bottom: 12px;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 14px;
+  border-radius: 14px;
 }
 
 .brand-name {
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--color-text);
   letter-spacing: -0.3px;
@@ -86,7 +136,7 @@ html, body {
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px;
-  background: var(--color-bg);
+  background: var(--color-input-bg);
   border: 1.5px solid transparent;
   border-radius: var(--radius);
   margin-bottom: 8px;
@@ -99,7 +149,13 @@ html, body {
 
 .server-item.active {
   border-color: var(--color-main);
-  background: rgba(51, 115, 252, 0.04);
+  background: rgba(51, 115, 252, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  .server-item.active {
+    background: rgba(51, 115, 252, 0.12);
+  }
 }
 
 .server-info { flex: 1; min-width: 0; }
@@ -136,7 +192,7 @@ html, body {
   border-radius: 10px;
   font-size: 10px;
   font-weight: 500;
-  background: #e8ecf0;
+  background: var(--color-badge-bg);
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.3px;
@@ -192,7 +248,7 @@ html, body {
   transition: background 0.2s;
 }
 
-.btn-ghost:hover { background: var(--color-bg); }
+.btn-ghost:hover { background: var(--color-hover-bg); }
 
 .btn-icon {
   display: inline-flex;
@@ -210,7 +266,7 @@ html, body {
 }
 
 .btn-icon:hover {
-  background: #fef2f2;
+  background: var(--color-icon-hover-bg);
   color: var(--color-danger);
 }
 
@@ -270,7 +326,7 @@ html, body {
   font-size: 13px;
   font-family: var(--font);
   color: var(--color-text);
-  background: var(--color-bg);
+  background: var(--color-input-bg);
   border: 1.5px solid transparent;
   border-radius: var(--radius);
   outline: none;
@@ -283,11 +339,6 @@ html, body {
 
 .add-form-fields input::placeholder {
   color: var(--color-text-muted);
-}
-
-.add-form-actions {
-  display: flex;
-  gap: 8px;
 }
 
 /* ===== Footer ===== */
@@ -314,21 +365,21 @@ html, body {
 }
 
 .alert-error {
-  color: #991b1b;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  color: var(--color-alert-error-text);
+  background: var(--color-alert-error-bg);
+  border: 1px solid var(--color-alert-error-border);
 }
 
 .alert-success {
-  color: #065f46;
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
+  color: var(--color-alert-success-text);
+  background: var(--color-alert-success-bg);
+  border: 1px solid var(--color-alert-success-border);
 }
 
 .alert-info {
-  color: #1e40af;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  color: var(--color-alert-info-text);
+  background: var(--color-alert-info-bg);
+  border: 1px solid var(--color-alert-info-border);
 }
 
 /* ===== Settings Page ===== */
@@ -415,15 +466,15 @@ html, body {
 }
 
 .status-badge.online {
-  background: #ecfdf5;
-  color: #065f46;
+  background: var(--color-status-online-bg);
+  color: var(--color-status-online-text);
 }
 
 .status-badge.online::before { background: var(--color-success); }
 
 .status-badge.offline {
-  background: #fef2f2;
-  color: #991b1b;
+  background: var(--color-status-offline-bg);
+  color: var(--color-status-offline-text);
 }
 
 .status-badge.offline::before { background: var(--color-danger); }
@@ -433,7 +484,7 @@ html, body {
   display: inline-block;
   width: 18px;
   height: 18px;
-  border: 2px solid rgba(0,0,0,0.08);
+  border: 2px solid var(--color-border);
   border-radius: 50%;
   border-top-color: var(--color-main);
   animation: spin 0.6s linear infinite;

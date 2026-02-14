@@ -149,3 +149,20 @@ pub async fn clear_cookies() -> Result<(), String> {
     info!("Cookies cleared");
     Ok(())
 }
+
+/// Set user preference cookies (__locale, __theme) in the cookie jar.
+/// These are sent to the server and injected into browser on CUI page load.
+#[tauri::command]
+pub async fn set_preference_cookies(locale: String, theme: String) -> Result<(), String> {
+    if !locale.is_empty() {
+        config::store_cookie(&format!("__locale={}; Path=/; Max-Age=31536000", locale));
+    }
+    if !theme.is_empty() {
+        config::store_cookie(&format!("__theme={}; Path=/; Max-Age=31536000", theme));
+    } else {
+        // Clear __theme cookie (empty = default/light)
+        config::store_cookie("__theme=; Path=/; Max-Age=0");
+    }
+    info!("Preference cookies set: locale={}, theme={}", locale, theme);
+    Ok(())
+}

@@ -343,12 +343,29 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
     match tokio::fs::read(&file_path).await {
         Ok(contents) => {
             let mime = guess_mime(&file_path);
-            Response::builder()
+            let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime)
-                .header("Cache-Control", "public, max-age=3600")
-                .body(Body::from(contents))
-                .unwrap()
+                .header("Cache-Control", "public, max-age=3600");
+
+            // For HTML pages (e.g. index.html), inject preference cookies
+            // so CUI JavaScript can read __locale and __theme from document.cookie
+            if mime.starts_with("text/html") {
+                let jar = config::COOKIE_JAR.read();
+                for c in jar.iter() {
+                    if c.name == "__locale" || c.name == "__theme" {
+                        let cookie_str = format!(
+                            "{}={}; Path=/; Max-Age=31536000; SameSite=Lax",
+                            c.name, c.value
+                        );
+                        if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
+                            builder = builder.header("Set-Cookie", hv);
+                        }
+                    }
+                }
+            }
+
+            builder.body(Body::from(contents)).unwrap()
         }
         Err(e) => {
             warn!("Failed to read file: {:?} -> {}", file_path, e);

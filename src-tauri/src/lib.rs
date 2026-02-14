@@ -122,12 +122,15 @@ pub fn run() {
                             &label,
                             WebviewUrl::External(parsed),
                         )
-                        .title(&url_str)
+                        .title("Yao CUI Desktop")
                         .inner_size(1100.0, 780.0)
                         .min_inner_size(600.0, 400.0)
                         .center()
                         .resizable(true)
                         .disable_drag_drop_handler()
+                        .on_document_title_changed(|wv, title| {
+                            let _ = wv.set_title(&title);
+                        })
                         .build()
                         {
                             Ok(_) => info!("Popup window created: {}", label),
@@ -161,6 +164,7 @@ pub fn run() {
             commands::get_proxy_status,
             commands::update_proxy_token,
             commands::clear_cookies,
+            commands::set_preference_cookies,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to start Tauri application");

@@ -67,3 +67,8 @@ export async function updateProxyToken(token: string): Promise<void> {
 export async function clearCookies(): Promise<void> {
   return invoke<void>("clear_cookies");
 }
+
+/** Set user preference cookies (__locale, __theme) in the proxy cookie jar */
+export async function setPreferenceCookies(locale: string, theme: string): Promise<void> {
+  return invoke<void>("set_preference_cookies", { locale, theme });
+}
