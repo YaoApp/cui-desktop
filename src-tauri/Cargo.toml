@@ -1,7 +1,7 @@
 [package]
 name = "cui-desktop"
 version = "1.0.0"
-description = "Yao CUI Desktop Client"
+description = "Yao Agents — Desktop client for Yao App Engine"
 authors = ["Yao Team"]
 edition = "2021"
 

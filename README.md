@@ -1,4 +1,4 @@
-# Yao CUI Desktop
+# Yao Agents
 
 A desktop client for connecting to remote Yao App Engine servers.
 
@@ -49,7 +49,7 @@ cargo tauri dev
 
 ```json
 {
-  "name": "Yao CUI Desktop",
+  "name": "Yao Agents",
   "logo": "",
   "port": 15099,
   "theme": {

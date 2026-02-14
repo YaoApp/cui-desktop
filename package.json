@@ -2,7 +2,7 @@
   "name": "cui-desktop",
   "private": true,
   "version": "1.0.0",
-  "description": "Yao CUI Desktop Client — A desktop client for connecting to remote Yao App Engine servers",
+  "description": "Yao Agents — A desktop client for connecting to remote Yao App Engine servers",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

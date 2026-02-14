@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Yao CUI Desktop Setup ==="
+echo "=== Yao Agents Setup ==="
 echo ""
 
 # 1. Check dependencies
