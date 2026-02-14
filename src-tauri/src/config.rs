@@ -124,27 +124,41 @@ fn purge_expired() {
     jar.retain(|c| c.expires_at == 0 || c.expires_at > now);
 }
 
-/// Parse a Set-Cookie header and store it in the jar
-pub fn store_cookie(set_cookie: &str) {
+/// Result of processing a Set-Cookie header
+pub struct StoreCookieResult {
+    /// Whether this cookie is "secure-only" (browser can't store it on HTTP)
+    pub is_secure: bool,
+    /// A sanitized Set-Cookie string for forwarding to the browser (None if secure-only)
+    pub browser_cookie: Option<String>,
+}
+
+/// Parse a Set-Cookie header, store it in the jar, and return processing result.
+///
+/// "Secure" cookies (__Secure-*, __Host-*, or with Secure attribute) are stored
+/// in the jar only. Non-secure cookies are stored in the jar AND a sanitized
+/// version is returned for forwarding to the browser.
+pub fn store_cookie(set_cookie: &str) -> StoreCookieResult {
     let parts: Vec<&str> = set_cookie.split(';').collect();
     if parts.is_empty() {
-        return;
+        return StoreCookieResult { is_secure: false, browser_cookie: None };
     }
 
     // Parse name=value
     let name_value = parts[0].trim();
     let (name, value) = match name_value.split_once('=') {
         Some((n, v)) => (n.trim().to_string(), v.trim().to_string()),
-        None => return,
+        None => return StoreCookieResult { is_secure: false, browser_cookie: None },
     };
 
     if name.is_empty() {
-        return;
+        return StoreCookieResult { is_secure: false, browser_cookie: None };
     }
 
     let mut path = "/".to_string();
     let mut expires_at: u64 = 0;
     let mut http_only = false;
+    let mut has_secure_flag = false;
+    let mut has_samesite_none = false;
 
     for part in &parts[1..] {
         let trimmed = part.trim();
@@ -163,23 +177,32 @@ pub fn store_cookie(set_cookie: &str) {
                 } else {
                     // max-age=0 means delete
                     remove_cookie(&name);
-                    return;
+                    return StoreCookieResult { is_secure: false, browser_cookie: None };
                 }
             }
         } else if lower == "httponly" {
             http_only = true;
+        } else if lower == "secure" {
+            has_secure_flag = true;
+        } else if lower == "samesite=none" {
+            has_samesite_none = true;
         }
     }
 
+    // Determine if this cookie is "secure-only" (can't work on plain HTTP)
+    let is_secure = has_secure_flag
+        || name.starts_with("__Secure-")
+        || name.starts_with("__Host-");
+
     let entry = CookieEntry {
         name: name.clone(),
-        value,
-        path,
+        value: value.clone(),
+        path: path.clone(),
         expires_at,
         http_only,
     };
 
-    // Upsert
+    // Upsert into jar (always)
     let mut jar = COOKIE_JAR.write();
     if let Some(existing) = jar.iter_mut().find(|c| c.name == name) {
         *existing = entry;
@@ -187,8 +210,34 @@ pub fn store_cookie(set_cookie: &str) {
         jar.push(entry);
     }
     drop(jar);
-
     save_cookies();
+
+    // Build sanitized Set-Cookie for browser (only if non-secure)
+    let browser_cookie = if !is_secure {
+        // Rebuild Set-Cookie: keep name=value, Path, Max-Age/Expires, HttpOnly
+        // Remove: Domain, Secure, SameSite=None (requires Secure on HTTP)
+        let mut parts_out = vec![format!("{}={}", name, value)];
+        for part in &parts[1..] {
+            let lower = part.trim().to_lowercase();
+            // Skip attributes that don't work on HTTP localhost
+            if lower == "secure"
+                || lower.starts_with("domain=")
+                || lower == "samesite=none"
+            {
+                continue;
+            }
+            parts_out.push(part.trim().to_string());
+        }
+        // If original had SameSite=None (which requires Secure), replace with Lax
+        if has_samesite_none {
+            parts_out.push("SameSite=Lax".to_string());
+        }
+        Some(parts_out.join("; "))
+    } else {
+        None
+    };
+
+    StoreCookieResult { is_secure, browser_cookie }
 }
 
 /// Remove a cookie by name
@@ -199,8 +248,41 @@ fn remove_cookie(name: &str) {
     save_cookies();
 }
 
-/// Build a Cookie header value for a given request path
-/// e.g. "__Secure-access_token=xxx; __Secure-csrf_token=yyy"
+/// Build a Cookie header value by merging jar cookies with browser cookies.
+/// Jar cookies take precedence for names that exist in both.
+///
+/// `browser_cookie_header`: the raw Cookie header from the browser (may be empty)
+/// `request_path`: used to filter jar cookies by path scope
+pub fn get_merged_cookies(browser_cookie_header: &str, request_path: &str) -> String {
+    purge_expired();
+
+    // Parse browser cookies into a map
+    let mut cookie_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    if !browser_cookie_header.is_empty() {
+        for pair in browser_cookie_header.split(';') {
+            let pair = pair.trim();
+            if let Some((n, v)) = pair.split_once('=') {
+                cookie_map.insert(n.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+
+    // Merge jar cookies (jar wins on conflict, because it has secure cookies the browser can't store)
+    let jar = COOKIE_JAR.read();
+    for c in jar.iter() {
+        if request_path.starts_with(&c.path) {
+            cookie_map.insert(c.name.clone(), c.value.clone());
+        }
+    }
+
+    cookie_map.into_iter()
+        .map(|(n, v)| format!("{}={}", n, v))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Build a Cookie header value from jar only (legacy, kept for compatibility)
 pub fn get_cookies_header(request_path: &str) -> String {
     purge_expired();
     let jar = COOKIE_JAR.read();

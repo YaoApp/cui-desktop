@@ -126,13 +126,20 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     // Build upstream request
     let mut builder = client.request(method, &target_url);
 
-    // Copy headers (skip hop-by-hop and browser cookies)
+    // Collect browser Cookie header before iterating
+    let browser_cookie_header = req.headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    // Copy headers (skip hop-by-hop; cookie is handled separately below)
     for (name, value) in req.headers() {
         let name_str = name.as_str().to_lowercase();
         if name_str == "host"
             || name_str == "connection"
             || name_str == "transfer-encoding"
-            || name_str == "cookie"  // Browser cookies are ignored; jar handles this
+            || name_str == "cookie"  // Handled separately: merge browser + jar
         {
             continue;
         }
@@ -155,11 +162,12 @@ async fn proxy_request(req: Request, client: Client) -> Response {
         }
     }
 
-    // Inject cookies from the local cookie jar
-    let jar_cookies = config::get_cookies_header(path_and_query);
-    if !jar_cookies.is_empty() {
-        debug!("Injecting cookies: {}", &jar_cookies[..jar_cookies.len().min(80)]);
-        builder = builder.header("Cookie", &jar_cookies);
+    // Merge browser cookies (e.g. __locale set by CUI JS) with jar cookies
+    // (e.g. __Secure-access_token managed by proxy). Jar wins on conflict.
+    let merged_cookies = config::get_merged_cookies(&browser_cookie_header, path_and_query);
+    if !merged_cookies.is_empty() {
+        debug!("Sending cookies: {}", &merged_cookies[..merged_cookies.len().min(120)]);
+        builder = builder.header("Cookie", &merged_cookies);
     }
 
     // Inject auth token (if obtained via client-side login)
@@ -218,11 +226,21 @@ async fn proxy_request(req: Request, client: Client) -> Response {
             continue;
         }
 
-        // Intercept Set-Cookie → store in cookie jar, do NOT forward to browser
+        // Process Set-Cookie: store in jar, and conditionally forward to browser.
+        // Secure cookies (__Secure-*, __Host-*, Secure flag) → jar only (browser
+        // rejects them on HTTP). Non-secure cookies → jar + forward sanitized
+        // version to browser (so CUI JS can read __locale, lang, etc.)
         if name_str == "set-cookie" {
             if let Ok(cookie_str) = value.to_str() {
-                info!("Intercepted cookie: {}", &cookie_str[..cookie_str.len().min(100)]);
-                config::store_cookie(cookie_str);
+                let result = config::store_cookie(cookie_str);
+                if result.is_secure {
+                    debug!("Secure cookie → jar only: {}", &cookie_str[..cookie_str.len().min(80)]);
+                } else if let Some(ref sanitized) = result.browser_cookie {
+                    debug!("Cookie → jar + browser: {}", &sanitized[..sanitized.len().min(80)]);
+                    if let Ok(hv) = HeaderValue::from_str(sanitized) {
+                        response_builder = response_builder.header("set-cookie", hv);
+                    }
+                }
             }
             continue;
         }

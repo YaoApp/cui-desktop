@@ -3,9 +3,14 @@ mod commands;
 mod config;
 mod proxy;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-use tracing::{info, debug};
+use tauri::webview::NewWindowResponse;
+use tracing::{info, debug, warn};
 use tracing_subscriber::EnvFilter;
+
+/// Global counter for generating unique popup window labels
+static POPUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,10 +28,13 @@ pub fn run() {
             // Load developer config.json at startup
             load_app_conf_from_resources(app.handle());
 
-            // Channel for navigation redirect requests
+            // Channel for navigation redirect requests (main window)
             let (tx, rx) = std::sync::mpsc::channel::<String>();
 
-            // Create the main window manually so we can attach on_navigation
+            // Clone AppHandle for use in on_new_window closure
+            let app_handle = app.handle().clone();
+
+            // Create the main window manually so we can attach on_navigation + on_new_window
             let window = WebviewWindowBuilder::new(
                     app,
                     "main",
@@ -71,6 +79,65 @@ pub fn run() {
                     // Allow all other navigation (Google OAuth, GitHub, etc.)
                     debug!("External navigation: {}", url_str);
                     true
+                })
+                // Intercept window.open / target="_blank":
+                // Return Deny immediately (avoids crash inside WebKit's createNewPage
+                // callback), then spawn a new Tauri window asynchronously.
+                // Authentication still works because the proxy manages cookies server-side.
+                .on_new_window(move |url, _features| {
+                    let url_str = url.to_string();
+                    let handle = app_handle.clone();
+                    info!("New window request: {}", url_str);
+
+                    // Spawn window creation outside the WebKit callback
+                    std::thread::spawn(move || {
+                        let n = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
+                        let label = format!("popup_{}", n);
+
+                        // Rewrite URL if it points to the remote server
+                        let state = config::get_proxy_state();
+                        let final_url = if state.running && !state.server_url.is_empty() {
+                            let remote = state.server_url.trim_end_matches('/');
+                            let local_base = format!("http://127.0.0.1:{}", state.port);
+                            if url_str.starts_with(remote) {
+                                url_str.replacen(remote, &local_base, 1)
+                            } else {
+                                url_str.clone()
+                            }
+                        } else {
+                            url_str.clone()
+                        };
+
+                        let parsed = match url::Url::parse(&final_url) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                warn!("Failed to parse popup URL: {} — {}", final_url, e);
+                                return;
+                            }
+                        };
+
+                        info!("Creating popup window: {} -> {}", label, final_url);
+                        match WebviewWindowBuilder::new(
+                            &handle,
+                            &label,
+                            WebviewUrl::External(parsed),
+                        )
+                        .title(&url_str)
+                        .inner_size(1100.0, 780.0)
+                        .min_inner_size(600.0, 400.0)
+                        .center()
+                        .resizable(true)
+                        .disable_drag_drop_handler()
+                        .build()
+                        {
+                            Ok(_) => info!("Popup window created: {}", label),
+                            Err(e) => warn!("Failed to create popup window: {}", e),
+                        }
+                    });
+
+                    // Deny immediately so WebKit doesn't try to create a page
+                    // (our async thread will handle it)
+                    NewWindowResponse::Deny
                 })
                 .build()?;
 
