@@ -1,6 +1,6 @@
 [package]
 name = "cui-desktop"
-version = "0.1.0"
+version = "1.0.0"
 description = "Yao CUI Desktop Client"
 authors = ["Yao Team"]
 edition = "2021"
