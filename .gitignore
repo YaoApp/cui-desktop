@@ -39,6 +39,7 @@ Thumbs.db
 .env.*
 .env.local
 .env.*.local
+docs/github-secrets.md
 
 # Tauri dev artifacts
 src-tauri/gen/

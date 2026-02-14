@@ -14,9 +14,12 @@ fi
 echo "Building CUI..."
 cd "$CUI_DIR"
 
-# Install dependencies
+# Set CUI build env (same as yao Makefile)
+echo "BASE=__yao_admin_root" > packages/cui/.env
+
+# Install dependencies (--no-frozen-lockfile for CI compatibility)
 echo "  Installing dependencies..."
-pnpm install
+pnpm install --no-frozen-lockfile
 
 # Build
 echo "  Building (this may take a few minutes)..."
