@@ -50,6 +50,40 @@ jobs:
             patchelf \
             libssl-dev
 
+      # ── Apple Code Signing (macOS only) ──
+
+      - name: Import Apple certificates
+        if: runner.os == 'macOS'
+        env:
+          APPLE_DEVELOPERIDG2CA: ${{ secrets.APPLE_DEVELOPERIDG2CA }}
+          APPLE_DISTRIBUTION: ${{ secrets.APPLE_DISTRIBUTION }}
+          APPLE_PRIVATE_KEY: ${{ secrets.APPLE_PRIVATE_KEY }}
+          APPLE_PRIVATE_KEY_PASSWORD: ${{ secrets.APPLE_PRIVATE_KEY_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Decode certificates
+          mkdir -p certs
+          echo "$APPLE_DEVELOPERIDG2CA" | base64 --decode > certs/DeveloperIDG2CA.cer
+          echo "$APPLE_DISTRIBUTION" | base64 --decode > certs/distribution.cer
+          echo "$APPLE_PRIVATE_KEY" | base64 --decode > certs/private_key.p12
+
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificates
+          security import ./certs/DeveloperIDG2CA.cer -k $KEYCHAIN_PATH -T /usr/bin/codesign
+          security import ./certs/distribution.cer -k $KEYCHAIN_PATH -T /usr/bin/codesign
+          security import ./certs/private_key.p12 -k $KEYCHAIN_PATH -P "$APPLE_PRIVATE_KEY_PASSWORD" -T /usr/bin/codesign
+
+          # Set keychain
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          rm -rf certs
+
       # ── Toolchains ──
 
       - name: Setup Node.js
@@ -95,11 +129,44 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build Tauri app
+      - name: Build Tauri app (macOS, signed)
+        if: runner.os == 'macOS'
+        run: cargo tauri build --target ${{ matrix.target }}
+        env:
+          # Tauri built-in signing
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: ${{ secrets.APPLE_SIGN }}"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_PRIVATE_KEY }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build Tauri app (non-macOS)
+        if: runner.os != 'macOS'
         run: cargo tauri build --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── macOS Notarization ──
+
+      - name: Notarize macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAME_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPEC_PASS }}
+        run: |
+          DMG=$(find src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -n "$DMG" ]; then
+            echo "Notarizing: $DMG"
+            xcrun notarytool submit "$DMG" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_PASSWORD" \
+              --wait --timeout 30m
+            xcrun stapler staple "$DMG"
+            echo "Notarization complete"
+          else
+            echo "Warning: No DMG found to notarize"
+          fi
 
       # ── Upload Artifacts ──
 
