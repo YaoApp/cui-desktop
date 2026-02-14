@@ -1,21 +1,21 @@
-# Yao Agents
+# CUI Desktop
 
-A cross-platform desktop client for [Yao App Engine](https://yaoapps.com). It connects to remote Yao servers through a local proxy, providing a native desktop experience for managing AI agents, workflows, and applications built with Yao.
+A cross-platform desktop shell for [CUI](https://github.com/YaoApp/cui) (the web-based admin interface of [Yao App Engine](https://yaoapps.com)). It wraps CUI in a native desktop window with a built-in local proxy, enabling seamless authentication, OAuth login, and same-origin access to all Yao server resources — without modifying CUI or Yao source code.
 
-**Website:** [yaoagents.com](https://yaoagents.com)
+Developers can rebrand and redistribute it as their own desktop application (e.g. **Yao Agents** at [yaoagents.com](https://yaoagents.com)) via `config.json`.
 
 ## Features
 
 - **Cross-platform** — macOS, Windows, Linux (built on Tauri 2.0)
 - **Local proxy** — Transparent HTTP proxy forwards all requests to the remote Yao server, ensuring same-origin for CUI, SUI, and all server-rendered pages
-- **Cookie management** — Proxy-side cookie jar handles secure cookies on HTTP localhost, no browser HTTPS restrictions
+- **Cookie management** — Proxy-side cookie jar handles secure cookies on HTTP localhost, bypassing browser HTTPS restrictions
 - **OAuth login** — Google/GitHub OAuth works seamlessly via navigation interception and configurable proxy port
 - **System tray** — Runs in the background; close window hides to tray, click tray icon to restore
 - **Multi-server** — Manage multiple Yao server connections, switch between them
-- **Dark mode & i18n** — Supports light/dark theme and Chinese/English, synced to CUI automatically
+- **Dark mode & i18n** — Light/dark theme and Chinese/English, synced to CUI automatically
 - **Drag & drop** — Files and images can be dragged into the app
-- **Developer config** — Brandable via `config.json` (name, logo, port, theme, update endpoints, default servers)
-- **Non-invasive** — Loads CUI build output as-is, no source modifications to Yao or CUI required
+- **Brandable** — Customize app name, logo, port, theme, update endpoints, and default servers via `config.json`
+- **Non-invasive** — Loads CUI build output as-is, no modifications to Yao or CUI required
 
 ## Quick Start
 
@@ -53,13 +53,13 @@ cargo tauri dev
 2. Rust backend starts a local HTTP proxy at `127.0.0.1:<port>` (default `15099`)
 3. Proxy serves CUI static assets at `/__yao_admin_root/`
 4. All other requests (`/api/*`, `/web/*`, `/v1/*`, SUI pages, etc.) are proxied to the remote server — guaranteeing same-origin
-5. Proxy intercepts `Set-Cookie` headers, stores them in a local cookie jar, and injects them on outgoing requests — bypassing browser HTTPS cookie restrictions on localhost
+5. Proxy intercepts `Set-Cookie` headers, stores them in a local cookie jar, and injects them on outgoing requests
 6. OAuth callbacks are intercepted by Tauri's navigation handler and routed through the proxy
 7. CUI runs in the WebView, fully unaware it's behind a proxy
 
 ## Developer Config
 
-`config.json` at project root (bundled into the app):
+`config.json` at project root (bundled into the app). Developers can rebrand the application by changing these fields:
 
 ```json
 {
@@ -85,8 +85,8 @@ cargo tauri dev
 
 | Field | Description |
 |---|---|
-| `name` | App display name |
-| `logo` | Logo image path (empty = default Yao icon) |
+| `name` | App display name (e.g. "Yao Agents") |
+| `logo` | Logo image path (empty = default icon) |
 | `port` | Local proxy port — register `http://127.0.0.1:<port>` as OAuth redirect URI |
 | `theme.primaryColor` | Primary UI color |
 | `updater` | Auto-update configuration |
