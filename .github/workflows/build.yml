@@ -1,15 +1,12 @@
 name: Build & Release
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a draft release"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -48,11 +45,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libssl-dev \
-            libayatana-appindicator3-dev
+            libssl-dev
 
       # ── Toolchains ──
 
@@ -85,13 +81,6 @@ jobs:
             src-tauri/target
           key: cargo-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: cargo-${{ matrix.target }}-
-
-      - name: Cache pnpm (CUI)
-        uses: actions/cache@v4
-        with:
-          path: cui/node_modules
-          key: cui-pnpm-${{ runner.os }}-${{ hashFiles('cui/pnpm-lock.yaml') }}
-          restore-keys: cui-pnpm-${{ runner.os }}-
 
       # ── Build CUI ──
 
@@ -143,15 +132,22 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
-  # ── Release (only on tag push) ──
+  # ── Release (optional, manual toggle) ──
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ inputs.release }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout (for version)
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -163,6 +159,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
           draft: true
           generate_release_notes: true
           files: |
