@@ -8,6 +8,7 @@ use http::{header, HeaderValue, StatusCode};
 use reqwest::Client;
 use tower_http::cors::CorsLayer;
 use tokio::net::TcpListener;
+use tauri::Manager;
 use tracing::{info, error, warn, debug};
 use std::path::PathBuf;
 
@@ -69,6 +70,11 @@ async fn handle_request(
     cui_dist: PathBuf,
 ) -> Response {
     let path = req.uri().path();
+
+    // Desktop native API endpoints (fullscreen, maximize, etc.)
+    if path.starts_with("/__yao_desktop/") {
+        return handle_desktop_api(req).await;
+    }
 
     // Bridge page: sets localStorage on the proxy origin, then redirects to CUI.
     // This guarantees umi_locale / __theme are written before CUI JS ever runs.
@@ -305,6 +311,82 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     }
 }
 
+/// Handle desktop native API requests (window management)
+async fn handle_desktop_api(req: Request) -> Response {
+    let path = req.uri().path();
+    match path {
+        "/__yao_desktop/window/fullscreen" => handle_window_fullscreen(req).await,
+        _ => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"error":"not found"}"#))
+            .unwrap(),
+    }
+}
+
+/// Toggle or query window fullscreen state.
+/// POST with `{"fullscreen": true/false}` to set; GET to query.
+async fn handle_window_fullscreen(req: Request) -> Response {
+    let app_handle = match config::get_app_handle() {
+        Some(h) => h,
+        None => return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"error":"app not ready"}"#))
+            .unwrap(),
+    };
+
+    // Find the currently focused window, fallback to main
+    let win = {
+        let mut focused: Option<tauri::WebviewWindow> = None;
+        for w in app_handle.webview_windows().values() {
+            if w.is_focused().unwrap_or(false) {
+                focused = Some(w.clone());
+                break;
+            }
+        }
+        focused.or_else(|| app_handle.get_webview_window("main"))
+    };
+
+    let win = match win {
+        Some(w) => w,
+        None => return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"error":"window not found"}"#))
+            .unwrap(),
+    };
+
+    let method = req.method().clone();
+
+    if method == http::Method::POST {
+        let body = axum::body::to_bytes(req.into_body(), 256)
+            .await
+            .unwrap_or_default();
+        let enable = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["fullscreen"].as_bool())
+            .unwrap_or(false);
+
+        info!("Window fullscreen: {} -> {}", win.label(), enable);
+        let _ = win.set_fullscreen(enable);
+        let is_fs = win.is_fullscreen().unwrap_or(enable);
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(r#"{{"fullscreen":{}}}"#, is_fs)))
+            .unwrap()
+    } else {
+        // GET: return current state
+        let is_fs = win.is_fullscreen().unwrap_or(false);
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(r#"{{"fullscreen":{}}}"#, is_fs)))
+            .unwrap()
+    }
+}
+
 /// Serve a tiny bridge page that writes preferences into localStorage
 /// on the proxy origin, then immediately redirects to CUI.
 /// Query params: ?locale=zh-CN&theme=dark
@@ -446,9 +528,10 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                     _ if !locale_value.is_empty() => "en-US",
                     _ => "",
                 };
-                // Always inject: set umi_locale and __theme if available
+                // Always inject: set umi_locale and __theme if available,
+                // plus override Fullscreen API to use native Tauri window API.
                 let inject_script = format!(
-                    r#"<script>try{{if("{umi}")localStorage.setItem("umi_locale","{umi}");if("{theme}")localStorage.setItem("__theme","{theme}");else localStorage.removeItem("__theme");}}catch(e){{}}</script>"#,
+                    r#"<script>try{{if("{umi}")localStorage.setItem("umi_locale","{umi}");if("{theme}")localStorage.setItem("__theme","{theme}");else localStorage.removeItem("__theme");}}catch(e){{}}</script><script>(function(){{var _fs=false,_ep="/__yao_desktop/window/fullscreen";function _set(v){{return fetch(_ep,{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{fullscreen:v}})}}).then(function(r){{return r.json()}}).then(function(d){{_fs=d.fullscreen;document.dispatchEvent(new Event("fullscreenchange"))}})}}Object.defineProperty(document,"fullscreenElement",{{configurable:true,get:function(){{return _fs?document.documentElement:null}}}});Object.defineProperty(document,"webkitFullscreenElement",{{configurable:true,get:function(){{return _fs?document.documentElement:null}}}});Element.prototype.requestFullscreen=function(){{return _set(true)}};document.exitFullscreen=function(){{return _set(false)}};Element.prototype.webkitRequestFullscreen=Element.prototype.requestFullscreen;document.webkitExitFullscreen=document.exitFullscreen}})();</script>"#,
                     umi = umi_locale,
                     theme = theme_value,
                 );

@@ -2,7 +2,22 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tracing::{info, warn};
+
+// ========== Global AppHandle ==========
+
+/// Global Tauri AppHandle, set once during app setup.
+/// Used by the proxy to call native window APIs (e.g. fullscreen).
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn set_app_handle(handle: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(handle);
+}
+
+pub fn get_app_handle() -> Option<&'static tauri::AppHandle> {
+    APP_HANDLE.get()
+}
 
 /// Proxy runtime state
 #[derive(Debug, Clone, Serialize, Deserialize)]

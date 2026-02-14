@@ -34,6 +34,9 @@ pub fn run() {
             // Load developer config.json at startup
             load_app_conf_from_resources(app.handle());
 
+            // Store AppHandle globally so the proxy can call native APIs
+            config::set_app_handle(app.handle().clone());
+
             // ── System Tray ──
             setup_tray(app)?;
 
