@@ -455,16 +455,34 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
 
     let file_path = cui_dist.join(relative);
 
-    // Path traversal protection
+    // Check if this looks like a static asset (has a file extension)
+    let has_extension = relative.rsplit('/').next()
+        .map(|f| f.contains('.'))
+        .unwrap_or(false);
+
+    // Path traversal protection + file lookup
     let canonical = match file_path.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // File not found → serve index.html (SPA routing)
-            let index = cui_dist.join("index.html");
-            if !index.exists() {
-                return serve_cui_not_built();
+            // Exact path failed — try case-insensitive lookup (Linux is case-sensitive)
+            if let Some(found) = case_insensitive_lookup(cui_dist, relative) {
+                info!("Case-insensitive match: {} -> {:?}", relative, found);
+                found
+            } else if has_extension {
+                // Static asset not found → 404 (don't silently serve index.html)
+                warn!("Static file not found: {} -> {:?}", relative, file_path);
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("Not Found"))
+                    .unwrap();
+            } else {
+                // SPA route (no extension) → serve index.html
+                let index = cui_dist.join("index.html");
+                if !index.exists() {
+                    return serve_cui_not_built();
+                }
+                index
             }
-            index
         }
     };
 
@@ -492,10 +510,19 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
         Ok(contents) => {
             let mime = guess_mime(&file_path);
             let is_html = mime.starts_with("text/html");
+            let is_font = mime.starts_with("font/") || mime.contains("font");
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime)
                 .header("Cache-Control", if is_html { "no-cache" } else { "public, max-age=3600" });
+
+            // Font files: add explicit CORS headers for WebKitGTK compatibility.
+            // CSS @font-face uses CORS mode; WebKitGTK may be stricter than Chrome.
+            if is_font {
+                builder = builder
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+            }
 
             if is_html {
                 // Inject preference cookies (Set-Cookie) so browser JS can read them
@@ -582,6 +609,37 @@ fn serve_cui_not_built() -> Response {
 </body></html>"#
         ))
         .unwrap()
+}
+
+/// Case-insensitive file lookup for Linux compatibility.
+/// Walks each path component and matches ignoring ASCII case.
+/// Returns the canonical path if found, or None.
+fn case_insensitive_lookup(base: &PathBuf, relative: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
+    let mut current = base.to_path_buf();
+
+    for part in &parts {
+        let entries = std::fs::read_dir(&current).ok()?;
+        let mut found = false;
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.eq_ignore_ascii_case(part) {
+                    current = entry.path();
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+
+    if current.is_file() {
+        current.canonicalize().ok()
+    } else {
+        None
+    }
 }
 
 /// Guess MIME type from file extension
