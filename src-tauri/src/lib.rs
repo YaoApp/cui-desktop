@@ -11,7 +11,7 @@ use tauri::{
     image::Image,
     WindowEvent,
 };
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tracing::{info, debug, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -43,8 +43,9 @@ pub fn run() {
             // Channel for navigation redirect requests (main window)
             let (tx, rx) = std::sync::mpsc::channel::<String>();
 
-            // Clone AppHandle for use in on_new_window closure
+            // Clone AppHandle for use in closures
             let app_handle = app.handle().clone();
+            let app_handle_dl = app.handle().clone();
 
             // Create the main window manually so we can attach on_navigation + on_new_window
             let window = WebviewWindowBuilder::new(
@@ -101,11 +102,8 @@ pub fn run() {
                     let handle = app_handle.clone();
                     info!("New window request: {}", url_str);
 
-                    // Spawn window creation outside the WebKit callback
+                    // Spawn outside the WebKit callback
                     std::thread::spawn(move || {
-                        let n = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
-                        let label = format!("popup_{}", n);
-
                         // Rewrite URL if it points to the remote server
                         let state = config::get_proxy_state();
                         let final_url = if state.running && !state.server_url.is_empty() {
@@ -120,6 +118,12 @@ pub fn run() {
                             url_str.clone()
                         };
 
+                        // File download URL → download directly instead of popup
+                        if is_file_download_url(&final_url) {
+                            spawn_file_download(handle, final_url);
+                            return;
+                        }
+
                         let parsed = match url::Url::parse(&final_url) {
                             Ok(u) => u,
                             Err(e) => {
@@ -128,7 +132,10 @@ pub fn run() {
                             }
                         };
 
+                        let n = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
+                        let label = format!("popup_{}", n);
                         info!("Creating popup window: {} -> {}", label, final_url);
+                        let handle_dl = handle.clone();
                         match WebviewWindowBuilder::new(
                             &handle,
                             &label,
@@ -143,6 +150,24 @@ pub fn run() {
                         .on_document_title_changed(|wv, title| {
                             let _ = wv.set_title(&title);
                         })
+                        .on_download(move |_wv, event| {
+                            match event {
+                                DownloadEvent::Requested { url, destination } => {
+                                    if let Ok(dl_dir) = handle_dl.path().download_dir() {
+                                        let fname = destination.file_name()
+                                            .map(|f| f.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| "download".to_string());
+                                        *destination = dl_dir.join(&fname);
+                                    }
+                                    info!("Popup download: {} -> {:?}", url.as_str(), destination);
+                                }
+                                DownloadEvent::Finished { url, path, success } => {
+                                    info!("Popup download done: {} success={} path={:?}", url.as_str(), success, path);
+                                }
+                                _ => {}
+                            }
+                            true
+                        })
                         .build()
                         {
                             Ok(_) => info!("Popup window created: {}", label),
@@ -153,6 +178,29 @@ pub fn run() {
                     // Deny immediately so WebKit doesn't try to create a page
                     // (our async thread will handle it)
                     NewWindowResponse::Deny
+                })
+                // Handle file downloads: save to system Downloads folder
+                .on_download(move |_webview, event| {
+                    match event {
+                        DownloadEvent::Requested { url, destination } => {
+                            if let Ok(download_dir) = app_handle_dl.path().download_dir() {
+                                let filename = destination.file_name()
+                                    .map(|f| f.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "download".to_string());
+                                *destination = download_dir.join(&filename);
+                            }
+                            info!("Download started: {} -> {:?}", url.as_str(), destination);
+                        }
+                        DownloadEvent::Finished { url, path, success } => {
+                            if success {
+                                info!("Download complete: {} -> {:?}", url.as_str(), path);
+                            } else {
+                                warn!("Download failed: {}", url.as_str());
+                            }
+                        }
+                        _ => {}
+                    }
+                    true // allow all downloads
                 })
                 .build()?;
 
@@ -190,6 +238,7 @@ pub fn run() {
             commands::update_proxy_token,
             commands::clear_cookies,
             commands::set_preference_cookies,
+            commands::set_window_theme,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to start Tauri application");
@@ -201,13 +250,12 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
-    // Load the tray-specific template icon (monochrome silhouette).
-    // macOS will auto-invert for dark/light mode when icon_as_template(true).
+    // Load the tray icon: monochrome template on macOS, colored on Windows/Linux
     let icon = load_tray_icon(app);
 
     let _tray = TrayIconBuilder::new()
         .icon(icon)
-        .icon_as_template(true) // macOS: system handles dark/light mode
+        .icon_as_template(cfg!(target_os = "macos")) // macOS: monochrome template; others: colored
         .tooltip("Yao Agents")
         .menu(&menu)
         .on_menu_event(|app, event| {
@@ -245,14 +293,21 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Load the tray icon PNG, trying multiple paths (bundled resources, dev icons/)
+/// Load the tray icon PNG, trying multiple paths (bundled resources, dev icons/).
+/// macOS: monochrome template icons; Windows/Linux: colored icons.
 fn load_tray_icon(app: &tauri::App) -> Image<'static> {
-    // Retina icon first (44x44 fallback to 88x88)
-    let candidates = ["tray-icon@2x.png", "tray-icon.png"];
+    // Choose icon set based on platform:
+    //   macOS: monochrome template (system auto-inverts for dark/light menu bar)
+    //   Windows/Linux: colored icon for better visual identification
+    let candidates: &[&str] = if cfg!(target_os = "macos") {
+        &["tray-icon@2x.png", "tray-icon.png"]
+    } else {
+        &["tray-icon-color@2x.png", "tray-icon-color.png", "tray-icon@2x.png", "tray-icon.png"]
+    };
 
     // 1. Try from bundled resource directory
     if let Ok(resource_dir) = app.handle().path().resource_dir() {
-        for name in &candidates {
+        for name in candidates {
             let path = resource_dir.join("icons").join(name);
             if let Ok(img) = Image::from_path(&path) {
                 info!("Tray icon loaded from: {:?}", path);
@@ -262,7 +317,7 @@ fn load_tray_icon(app: &tauri::App) -> Image<'static> {
     }
 
     // 2. Try from project icons/ directory (dev mode)
-    for name in &candidates {
+    for name in candidates {
         let path = std::path::PathBuf::from("icons").join(name);
         if let Ok(img) = Image::from_path(&path) {
             info!("Tray icon loaded from: {:?}", path);
@@ -270,9 +325,193 @@ fn load_tray_icon(app: &tauri::App) -> Image<'static> {
         }
     }
 
-    // 3. Fallback: generate a simple 1x1 transparent pixel icon
+    // 3. Fallback: use embedded icon
     warn!("Tray icon not found, using fallback");
-    Image::from_bytes(include_bytes!("../icons/tray-icon.png")).unwrap()
+    if cfg!(target_os = "macos") {
+        Image::from_bytes(include_bytes!("../icons/tray-icon.png")).unwrap()
+    } else {
+        Image::from_bytes(include_bytes!("../icons/tray-icon-color.png")).unwrap()
+    }
+}
+
+// ========== File Download Helpers ==========
+
+/// Check if a URL looks like a file download (Yao file API)
+fn is_file_download_url(url: &str) -> bool {
+    if let Ok(parsed) = url::Url::parse(url) {
+        let path = parsed.path();
+        // Yao file API: /v1/file/{namespace}/{hash}/content
+        return path.starts_with("/v1/file/");
+    }
+    false
+}
+
+/// Spawn an async task to download a file from the proxy and save to Downloads folder.
+fn spawn_file_download(handle: tauri::AppHandle, url: String) {
+    info!("File download: {}", url);
+    tauri::async_runtime::spawn(async move {
+        let download_dir = match handle.path().download_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Cannot resolve Downloads directory: {}", e);
+                return;
+            }
+        };
+
+        let client = match reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .no_proxy()
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Download client error: {}", e);
+                return;
+            }
+        };
+
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Download request failed: {} — {}", url, e);
+                return;
+            }
+        };
+
+        if !resp.status().is_success() {
+            warn!("Download HTTP {}: {}", resp.status(), url);
+            return;
+        }
+
+        // Extract filename from Content-Disposition header or URL
+        let filename = extract_download_filename(&resp, &url);
+        let dest = ensure_unique_path(download_dir.join(&filename));
+
+        match resp.bytes().await {
+            Ok(bytes) => {
+                if let Err(e) = std::fs::write(&dest, &bytes) {
+                    warn!("Failed to save file: {:?} — {}", dest, e);
+                    return;
+                }
+                info!("Downloaded {} bytes → {:?}", bytes.len(), dest);
+
+                // Reveal file in system file manager
+                #[cfg(target_os = "macos")]
+                { let _ = std::process::Command::new("open").arg("-R").arg(&dest).spawn(); }
+                #[cfg(target_os = "windows")]
+                { let _ = std::process::Command::new("explorer").arg("/select,").arg(&dest).spawn(); }
+                #[cfg(target_os = "linux")]
+                { let _ = std::process::Command::new("xdg-open").arg(&download_dir).spawn(); }
+            }
+            Err(e) => warn!("Failed to read response body: {} — {}", url, e),
+        }
+    });
+}
+
+/// Extract a filename from the response Content-Disposition header, falling back to the URL path.
+fn extract_download_filename(resp: &reqwest::Response, url: &str) -> String {
+    if let Some(cd) = resp.headers().get("content-disposition") {
+        // Use from_utf8_lossy instead of to_str() — many servers send raw UTF-8
+        // filenames (e.g. Chinese) which are not valid ASCII.
+        // to_str() would fail silently and we'd lose the filename.
+        let cd_str = String::from_utf8_lossy(cd.as_bytes());
+        debug!("Content-Disposition: {}", cd_str);
+
+        let cd_lower = cd_str.to_lowercase();
+
+        // Try: filename*=UTF-8''encoded_name (RFC 5987)
+        if let Some(pos) = cd_lower.find("filename*=") {
+            let after = &cd_str[pos + 10..];
+            // Strip charset prefix like "UTF-8''" or "utf-8''"
+            let encoded = if let Some(idx) = after.find("''") {
+                &after[idx + 2..]
+            } else {
+                after
+            };
+            let end = encoded.find(';').unwrap_or(encoded.len());
+            let decoded = percent_decode(encoded[..end].trim());
+            let decoded = decoded.trim().trim_matches('"');
+            if !decoded.is_empty() {
+                info!("Filename from Content-Disposition (RFC5987): {}", decoded);
+                return sanitize_filename(decoded);
+            }
+        }
+
+        // Try: filename="name" or filename=name
+        if let Some(pos) = cd_lower.find("filename=") {
+            let after = &cd_str[pos + 9..];
+            let name = if after.starts_with('"') {
+                after[1..].split('"').next().unwrap_or("")
+            } else {
+                let end = after.find(';').unwrap_or(after.len());
+                after[..end].trim()
+            };
+            if !name.is_empty() {
+                info!("Filename from Content-Disposition: {}", name);
+                return sanitize_filename(name);
+            }
+        }
+    }
+
+    // Fallback: last meaningful path segment from URL
+    if let Ok(parsed) = url::Url::parse(url) {
+        let segments: Vec<&str> = parsed.path().split('/').filter(|s| !s.is_empty()).collect();
+        for &seg in segments.iter().rev() {
+            if seg != "content" && seg != "download" {
+                info!("Filename from URL fallback: {}", seg);
+                return sanitize_filename(seg);
+            }
+        }
+    }
+    "download".to_string()
+}
+
+/// Simple percent-decoding (for Content-Disposition filenames)
+fn percent_decode(input: &str) -> String {
+    let mut out = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
+                16,
+            ) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Remove characters that are illegal in filenames
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect()
+}
+
+/// If the path already exists, append (1), (2), … until unique
+fn ensure_unique_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let ext = path.extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    for i in 1..1000 {
+        let candidate = parent.join(format!("{} ({}){}", stem, i, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path
 }
 
 /// Load config.json from bundled resources or project root (dev mode)

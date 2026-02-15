@@ -150,6 +150,22 @@ pub async fn clear_cookies() -> Result<(), String> {
     Ok(())
 }
 
+/// Set the window theme (title bar color) for all windows.
+/// Accepts "dark" or "light".
+#[tauri::command]
+pub async fn set_window_theme(app: AppHandle, theme: String) -> Result<(), String> {
+    let t = match theme.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    for window in app.webview_windows().values() {
+        let _ = window.set_theme(t);
+    }
+    info!("Window theme set to: {}", theme);
+    Ok(())
+}
+
 /// Set user preference cookies (__locale, __theme) in the cookie jar.
 /// These are sent to the server and injected into browser on CUI page load.
 #[tauri::command]

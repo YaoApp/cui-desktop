@@ -72,3 +72,8 @@ export async function clearCookies(): Promise<void> {
 export async function setPreferenceCookies(locale: string, theme: string): Promise<void> {
   return invoke<void>("set_preference_cookies", { locale, theme });
 }
+
+/** Set the window theme (title bar) for all windows */
+export async function setWindowTheme(theme: string): Promise<void> {
+  return invoke<void>("set_window_theme", { theme });
+}

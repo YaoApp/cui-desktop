@@ -131,10 +131,14 @@ export function setTheme(theme: string): void {
   applyTheme();
 }
 
-/** Apply theme to document (adds/removes data-theme attribute) */
+/** Apply theme to document (adds/removes data-theme attribute + sync title bar) */
 export function applyTheme(): void {
   const theme = getTheme();
   document.documentElement.setAttribute("data-theme", theme);
+  // Sync with Tauri window theme so the title bar follows the UI theme
+  import("../lib/api").then(({ setWindowTheme }) => {
+    setWindowTheme(theme).catch(() => {});
+  }).catch(() => {});
 }
 
 /** Get theme value for CUI cookie: "dark" or "" (empty = light) */

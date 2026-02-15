@@ -30,7 +30,9 @@
       "../cui-dist": "cui-dist",
       "../config.json": "config.json",
       "icons/tray-icon.png": "icons/tray-icon.png",
-      "icons/tray-icon@2x.png": "icons/tray-icon@2x.png"
+      "icons/tray-icon@2x.png": "icons/tray-icon@2x.png",
+      "icons/tray-icon-color.png": "icons/tray-icon-color.png",
+      "icons/tray-icon-color@2x.png": "icons/tray-icon-color@2x.png"
     },
     "icon": [
       "icons/32x32.png",
