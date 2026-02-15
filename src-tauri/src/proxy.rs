@@ -599,6 +599,7 @@ fn guess_mime(path: &PathBuf) -> &'static str {
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
         Some("eot") => "application/vnd.ms-fontobject",
         Some("wasm") => "application/wasm",
         Some("map") => "application/json",
