@@ -630,14 +630,21 @@ fn serve_cui_not_built() -> Response {
         .unwrap()
 }
 
-/// Inline font file references in CSS as base64 data URIs.
-/// Replaces `url('./path/to/font.ttf')` with `url('data:font/ttf;base64,...')`.
-/// This ensures fonts load on WebKitGTK (Linux Tauri) where the WebView may
-/// silently refuse to fetch @font-face resources via separate HTTP requests.
+/// Process CSS @font-face rules for WebKitGTK compatibility:
+/// 1. Remove `local(...)` entries — fontconfig (Linux) may fuzzy-match them to
+///    unrelated system fonts, causing the browser to skip the URL entirely.
+/// 2. Inline font file URLs as base64 data URIs — WebKitGTK may silently refuse
+///    to fetch @font-face resources via separate HTTP requests.
 fn inline_css_fonts(css: &str, css_dir: &PathBuf) -> String {
     let font_exts: &[&str] = &["otf", "ttf", "woff", "woff2", "eot"];
     let mut result = css.to_string();
 
+    // Step 1: Strip local() entries from @font-face src.
+    // e.g. "local('md_icon'), url(...)" → "url(...)"
+    // This prevents fontconfig fuzzy matching on Linux.
+    result = strip_css_local_refs(&result);
+
+    // Step 2: Replace font file URLs with inline base64 data URIs.
     // Process both url('...') and url("...")
     for (open_delim, close_delim) in &[("url('", "'"), ("url(\"", "\"")] {
         let mut search_from = 0;
@@ -686,6 +693,38 @@ fn inline_css_fonts(css: &str, css_dir: &PathBuf) -> String {
             }
 
             search_from = end + close_delim.len();
+        }
+    }
+    result
+}
+
+/// Remove all `local('...')` and `local("...")` entries (with trailing comma/space)
+/// from CSS @font-face src declarations.
+/// e.g. `src: local('md_icon'), url(...) ...` → `src: url(...) ...`
+fn strip_css_local_refs(css: &str) -> String {
+    let mut result = css.to_string();
+    for (open, close) in &[("local('", "')"), ("local(\"", "\")")] {
+        loop {
+            let start = match result.find(open) {
+                Some(pos) => pos,
+                None => break,
+            };
+            let after_open = start + open.len();
+            let end = match result[after_open..].find(close) {
+                Some(pos) => after_open + pos + close.len(),
+                None => break,
+            };
+            // Remove trailing ", " or "," or " " after the local() entry
+            let mut trim_end = end;
+            let remaining = &result[trim_end..];
+            if remaining.starts_with(", ") {
+                trim_end += 2;
+            } else if remaining.starts_with(",") {
+                trim_end += 1;
+            } else if remaining.starts_with(" ") {
+                trim_end += 1;
+            }
+            result = format!("{}{}", &result[..start], &result[trim_end..]);
         }
     }
     result
