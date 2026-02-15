@@ -48,9 +48,10 @@ export async function checkServer(serverUrl: string): Promise<WellKnownInfo> {
 export async function startProxy(
   serverUrl: string,
   token: string,
-  authMode: string
+  authMode: string,
+  dashboard: string = ""
 ): Promise<number> {
-  return invoke<number>("start_proxy", { serverUrl, token, authMode });
+  return invoke<number>("start_proxy", { serverUrl, token, authMode, dashboard });
 }
 
 /** Get current proxy status */

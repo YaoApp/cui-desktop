@@ -100,15 +100,16 @@ pub async fn start_proxy(
     server_url: String,
     token: String,
     auth_mode: String,
+    dashboard: String,
 ) -> Result<u16, String> {
     let state = config::get_proxy_state();
     if state.running {
-        config::update_proxy_state(&server_url, &token, &auth_mode);
-        info!("Proxy config updated");
+        config::update_proxy_state(&server_url, &token, &auth_mode, &dashboard);
+        info!("Proxy config updated (dashboard={})", dashboard);
         return Ok(state.port);
     }
 
-    config::update_proxy_state(&server_url, &token, &auth_mode);
+    config::update_proxy_state(&server_url, &token, &auth_mode, &dashboard);
 
     // Set up cookie jar
     if let Ok(app_data) = app.path().app_data_dir() {
@@ -138,7 +139,7 @@ pub async fn get_proxy_status() -> ProxyState {
 #[tauri::command]
 pub async fn update_proxy_token(token: String) -> Result<(), String> {
     let state = config::get_proxy_state();
-    config::update_proxy_state(&state.server_url, &token, &state.auth_mode);
+    config::update_proxy_state(&state.server_url, &token, &state.auth_mode, &state.dashboard);
     Ok(())
 }
 

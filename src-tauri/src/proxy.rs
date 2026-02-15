@@ -96,6 +96,34 @@ async fn handle_request(
             .unwrap();
     }
 
+    // Redirect /{dashboard}/* → /__yao_admin_root/* so that server-side
+    // redirects (e.g. login success_url="/dashboard/chat") land on local CUI
+    // instead of being proxied to the remote server.
+    {
+        let state = get_proxy_state();
+        let dash = &state.dashboard; // e.g. "/dashboard"
+        if !dash.is_empty() {
+            let dash_slash = format!("{}/", dash); // "/dashboard/"
+            if path.starts_with(&dash_slash) {
+                let new_path = format!("/__yao_admin_root/{}", &path[dash_slash.len()..]);
+                info!("Dashboard redirect: {} -> {}", path, new_path);
+                return Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header(header::LOCATION, new_path)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+            if path == dash.as_str() {
+                info!("Dashboard redirect: {} -> /__yao_admin_root/", path);
+                return Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header(header::LOCATION, "/__yao_admin_root/")
+                    .body(Body::empty())
+                    .unwrap();
+            }
+        }
+    }
+
     // Root -> redirect to CUI
     if path == "/" {
         return Response::builder()
@@ -248,9 +276,31 @@ async fn proxy_request(req: Request, client: Client) -> Response {
 
         if is_redirect && name_str == "location" {
             if let Ok(loc) = value.to_str() {
-                if loc.starts_with(&remote_base) {
-                    let local_loc = loc.replacen(&remote_base, &local_base, 1);
-                    response_builder = response_builder.header("location", local_loc);
+                let mut final_loc = loc.to_string();
+
+                // Rewrite absolute remote URL → local proxy
+                if final_loc.starts_with(&remote_base) {
+                    final_loc = final_loc.replacen(&remote_base, &local_base, 1);
+                }
+
+                // Rewrite /{dashboard}/ paths → /__yao_admin_root/
+                // so server-side redirects (login success, OAuth callback, etc.)
+                // land on local CUI instead of being proxied back to remote.
+                if !state.dashboard.is_empty() {
+                    let dash_slash = format!("{}/", state.dashboard);  // "/dashboard/"
+                    let local_dash_abs = format!("{}{}/", local_base, state.dashboard); // "http://127.0.0.1:PORT/dashboard/"
+                    let local_admin = format!("{}/__yao_admin_root/", local_base);
+
+                    if final_loc.starts_with(&local_dash_abs) {
+                        final_loc = final_loc.replacen(&format!("{}{}", local_base, state.dashboard), &format!("{}/__yao_admin_root", local_base), 1);
+                    } else if final_loc.starts_with(&dash_slash) || final_loc == state.dashboard {
+                        final_loc = final_loc.replacen(&state.dashboard, "/__yao_admin_root", 1);
+                    }
+                    let _ = local_admin; // suppress unused warning
+                }
+
+                if final_loc != loc {
+                    response_builder = response_builder.header("location", final_loc);
                     continue;
                 }
             }

@@ -178,15 +178,17 @@ async function doConnect(url: string, label: string, alertArea: HTMLElement) {
 
   try {
     let name = label || url.replace(/^https?:\/\//, "");
+    let dashboard = "";
     try {
       const info = await checkServer(url);
       if (info.name) name = info.name;
+      if (info.dashboard) dashboard = info.dashboard;
     } catch { /* older server */ }
 
     await saveServer({ url, label: name, lastConnected: Date.now() });
 
     showAlert(alertArea, "info", t("app.starting_proxy"));
-    await startProxy(url, "", "openapi");
+    await startProxy(url, "", "openapi", dashboard);
 
     showAlert(alertArea, "success", t("app.connected"));
     setTimeout(() => navigate("/app"), 300);

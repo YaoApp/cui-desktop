@@ -27,6 +27,10 @@ pub struct ProxyState {
     pub server_url: String,
     pub token: String,
     pub auth_mode: String,
+    /// Server admin root path from .well-known/yao (e.g. "/dashboard").
+    /// Used to redirect /{dashboard}/* → /__yao_admin_root/* so that
+    /// server-side redirects (login success_url etc.) land on local CUI.
+    pub dashboard: String,
 }
 
 impl Default for ProxyState {
@@ -37,6 +41,7 @@ impl Default for ProxyState {
             server_url: String::new(),
             token: String::new(),
             auth_mode: String::from("openapi"),
+            dashboard: String::new(),
         }
     }
 }
@@ -46,11 +51,20 @@ pub static PROXY_STATE: Lazy<RwLock<ProxyState>> = Lazy::new(|| {
     RwLock::new(ProxyState::default())
 });
 
-pub fn update_proxy_state(server_url: &str, token: &str, auth_mode: &str) {
+pub fn update_proxy_state(server_url: &str, token: &str, auth_mode: &str, dashboard: &str) {
     let mut state = PROXY_STATE.write();
     state.server_url = server_url.to_string();
     state.token = token.to_string();
     state.auth_mode = auth_mode.to_string();
+    // Normalize: ensure leading slash, strip trailing slash
+    let d = dashboard.trim().trim_end_matches('/');
+    state.dashboard = if d.is_empty() {
+        String::new()
+    } else if d.starts_with('/') {
+        d.to_string()
+    } else {
+        format!("/{}", d)
+    };
 }
 
 pub fn set_proxy_running(running: bool) {
