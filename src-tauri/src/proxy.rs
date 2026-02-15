@@ -11,7 +11,6 @@ use tokio::net::TcpListener;
 use tauri::Manager;
 use tracing::{info, error, warn, debug};
 use std::path::PathBuf;
-use base64::Engine as _;
 
 use crate::config::{self, get_proxy_state};
 
@@ -63,8 +62,8 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf, port: u16) -> Result<u16
 }
 
 /// Route handler:
-///   /__yao_admin_root/* → local CUI static files
-///   Everything else     → proxy to remote server (same-origin guarantee)
+///   /__yao_admin_root/* -> local CUI static files
+///   Everything else     -> proxy to remote server (same-origin guarantee)
 async fn handle_request(
     req: Request,
     client: Client,
@@ -83,7 +82,7 @@ async fn handle_request(
         return serve_bridge_page(&req);
     }
 
-    // CUI static assets — served locally
+    // CUI static assets -- served locally
     if path.starts_with("/__yao_admin_root/") {
         return serve_cui_static(path, &cui_dist).await;
     }
@@ -97,7 +96,7 @@ async fn handle_request(
             .unwrap();
     }
 
-    // Root → redirect to CUI
+    // Root -> redirect to CUI
     if path == "/" {
         return Response::builder()
             .status(StatusCode::TEMPORARY_REDIRECT)
@@ -106,10 +105,7 @@ async fn handle_request(
             .unwrap();
     }
 
-    // Everything else → proxy to remote server
-    // This covers /v1/*, /api/*, /web/*, /components/*, /assets/*,
-    // /ai/*, /agents/*, /docs/*, /tools/*, /brands/*, /admin/*,
-    // /iframe/*, /.well-known/*, and any SUI server-rendered pages.
+    // Everything else -> proxy to remote server
     proxy_request(req, client).await
 }
 
@@ -175,8 +171,7 @@ async fn proxy_request(req: Request, client: Client) -> Response {
         }
     }
 
-    // Merge browser cookies (e.g. __locale set by CUI JS) with jar cookies
-    // (e.g. __Secure-access_token managed by proxy). Jar wins on conflict.
+    // Merge browser cookies with jar cookies. Jar wins on conflict.
     let merged_cookies = config::get_merged_cookies(&browser_cookie_header, path_and_query);
     if !merged_cookies.is_empty() {
         debug!("Sending cookies: {}", &merged_cookies[..merged_cookies.len().min(120)]);
@@ -232,24 +227,17 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     for (name, value) in upstream_resp.headers() {
         let name_str = name.as_str().to_lowercase();
 
-        // Skip hop-by-hop headers
-        if name_str == "transfer-encoding"
-            || name_str == "connection"
-        {
+        if name_str == "transfer-encoding" || name_str == "connection" {
             continue;
         }
 
-        // Process Set-Cookie: store in jar, and conditionally forward to browser.
-        // Secure cookies (__Secure-*, __Host-*, Secure flag) → jar only (browser
-        // rejects them on HTTP). Non-secure cookies → jar + forward sanitized
-        // version to browser (so CUI JS can read __locale, lang, etc.)
         if name_str == "set-cookie" {
             if let Ok(cookie_str) = value.to_str() {
                 let result = config::store_cookie(cookie_str);
                 if result.is_secure {
-                    debug!("Secure cookie → jar only: {}", &cookie_str[..cookie_str.len().min(80)]);
+                    debug!("Secure cookie -> jar only: {}", &cookie_str[..cookie_str.len().min(80)]);
                 } else if let Some(ref sanitized) = result.browser_cookie {
-                    debug!("Cookie → jar + browser: {}", &sanitized[..sanitized.len().min(80)]);
+                    debug!("Cookie -> jar + browser: {}", &sanitized[..sanitized.len().min(80)]);
                     if let Ok(hv) = HeaderValue::from_str(sanitized) {
                         response_builder = response_builder.header("set-cookie", hv);
                     }
@@ -258,7 +246,6 @@ async fn proxy_request(req: Request, client: Client) -> Response {
             continue;
         }
 
-        // Rewrite absolute URLs in Location header
         if is_redirect && name_str == "location" {
             if let Ok(loc) = value.to_str() {
                 if loc.starts_with(&remote_base) {
@@ -273,7 +260,6 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     }
 
     if is_sse {
-        // SSE: stream without buffering
         response_builder = response_builder
             .header("Cache-Control", "no-cache")
             .header("X-Accel-Buffering", "no");
@@ -288,7 +274,6 @@ async fn proxy_request(req: Request, client: Client) -> Response {
                 .unwrap()
         })
     } else {
-        // Normal response: read full body
         match upstream_resp.bytes().await {
             Ok(body) => {
                 let len = body.len();
@@ -326,7 +311,6 @@ async fn handle_desktop_api(req: Request) -> Response {
 }
 
 /// Toggle or query window fullscreen state.
-/// POST with `{"fullscreen": true/false}` to set; GET to query.
 async fn handle_window_fullscreen(req: Request) -> Response {
     let app_handle = match config::get_app_handle() {
         Some(h) => h,
@@ -337,7 +321,6 @@ async fn handle_window_fullscreen(req: Request) -> Response {
             .unwrap(),
     };
 
-    // Find the currently focused window, fallback to main
     let win = {
         let mut focused: Option<tauri::WebviewWindow> = None;
         for w in app_handle.webview_windows().values() {
@@ -378,7 +361,6 @@ async fn handle_window_fullscreen(req: Request) -> Response {
             .body(Body::from(format!(r#"{{"fullscreen":{}}}"#, is_fs)))
             .unwrap()
     } else {
-        // GET: return current state
         let is_fs = win.is_fullscreen().unwrap_or(false);
         Response::builder()
             .status(StatusCode::OK)
@@ -390,7 +372,6 @@ async fn handle_window_fullscreen(req: Request) -> Response {
 
 /// Serve a tiny bridge page that writes preferences into localStorage
 /// on the proxy origin, then immediately redirects to CUI.
-/// Query params: ?locale=zh-CN&theme=dark
 fn serve_bridge_page(req: &Request) -> Response {
     let query = req.uri().query().unwrap_or("");
     let mut locale = String::new();
@@ -403,22 +384,14 @@ fn serve_bridge_page(req: &Request) -> Response {
         }
     }
 
-    // Build a minimal HTML page that:
-    //  1) writes umi_locale, xgen:xgen_theme, __theme into localStorage
-    //  2) sets __theme + __locale as browser cookies (for SUI server-rendered pages)
-    //  3) immediately navigates to CUI
-    // CUI reads: umi_locale for language, xgen:xgen_theme for theme (xgen format)
-    // SUI reads: __theme / __locale cookies (server-side rendering)
     let html = format!(
         r#"<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Loading…</title>
+<html><head><meta charset="utf-8"><title>Loading...</title>
 <script>
 try {{
-  // CUI (umi) language
   if ("{locale}") {{
     localStorage.setItem("umi_locale", "{locale}");
   }}
-  // CUI (xgen) theme
   if ("{theme}") {{
     localStorage.setItem("__theme", "{theme}");
     localStorage.setItem("xgen:xgen_theme", JSON.stringify({{type:"String",value:"{theme}"}}));
@@ -426,7 +399,6 @@ try {{
     localStorage.removeItem("__theme");
     localStorage.removeItem("xgen:xgen_theme");
   }}
-  // Browser cookies for SUI server-rendered pages
   var exp = "max-age=31536000;path=/;SameSite=Lax";
   if ("{locale_cookie}") document.cookie = "__locale={locale_cookie};" + exp;
   if ("{theme}") document.cookie = "__theme={theme};" + exp;
@@ -450,7 +422,6 @@ location.replace("/__yao_admin_root/");
 
 /// Serve CUI static files from the build output directory
 async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
-    // Strip /__yao_admin_root/ prefix
     let relative = path.strip_prefix("/__yao_admin_root/").unwrap_or("");
     let relative = if relative.is_empty() { "index.html" } else { relative };
 
@@ -465,19 +436,19 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
     let canonical = match file_path.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // Exact path failed — try case-insensitive lookup (Linux is case-sensitive)
+            // Exact path failed -- try case-insensitive lookup (Linux is case-sensitive)
             if let Some(found) = case_insensitive_lookup(cui_dist, relative) {
                 info!("Case-insensitive match: {} -> {:?}", relative, found);
                 found
             } else if has_extension {
-                // Static asset not found → 404 (don't silently serve index.html)
+                // Static asset not found -> 404 (don't silently serve index.html)
                 warn!("Static file not found: {} -> {:?}", relative, file_path);
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Body::from("Not Found"))
                     .unwrap();
             } else {
-                // SPA route (no extension) → serve index.html
+                // SPA route (no extension) -> serve index.html
                 let index = cui_dist.join("index.html");
                 if !index.exists() {
                     return serve_cui_not_built();
@@ -496,7 +467,7 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
             .unwrap();
     }
 
-    // Directory → serve index.html (SPA routing)
+    // Directory -> serve index.html (SPA routing)
     let file_path = if canonical.is_file() {
         canonical
     } else {
@@ -518,26 +489,21 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                 .header("Cache-Control", if is_html { "no-cache" } else { "public, max-age=3600" });
 
             // Font files: add explicit CORS headers for WebKitGTK compatibility.
-            // CSS @font-face uses CORS mode; WebKitGTK may be stricter than Chrome.
             if is_font {
                 builder = builder
                     .header("Access-Control-Allow-Origin", "*")
                     .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             }
 
-            // CSS with @font-face: inline font files as base64 data URIs.
-            // WebKitGTK (Linux) may silently refuse to fetch fonts via separate
-            // HTTP requests even on the same origin. Inlining guarantees they load.
+            // CSS with @font-face: strip local() refs to prevent fontconfig
+            // fuzzy matching on Linux (WebKitGTK). Fonts are loaded via the
+            // injected JS FontFace API script instead of CSS @font-face url().
             if mime.starts_with("text/css") {
                 let css_str = String::from_utf8_lossy(&contents);
                 if css_str.contains("@font-face") {
-                    let css_dir = file_path.parent().unwrap_or(cui_dist);
-                    let modified = inline_css_fonts(&css_str, &css_dir.to_path_buf());
+                    let modified = strip_css_local_refs(&css_str);
                     if modified.len() != css_str.len() {
-                        info!("Inlined fonts in CSS ({} -> {} bytes)", contents.len(), modified.len());
-                        // Use no-cache for transformed CSS so WebKitGTK always
-                        // revalidates (prevents stale cached version without fonts)
-                        builder = builder.header("Cache-Control", "no-cache");
+                        info!("Stripped local() from CSS @font-face ({} bytes)", contents.len());
                     }
                     return builder.body(Body::from(modified)).unwrap();
                 }
@@ -563,10 +529,6 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                 }
                 drop(jar);
 
-                // Inject a synchronous <script> into the HTML to sync preferences
-                // to localStorage BEFORE any other scripts run.
-                // CUI (umi-based) reads language from localStorage key "umi_locale".
-                // Map: "zh-cn" → "zh-CN", "en-us" → "en-US"
                 let umi_locale = match locale_value.as_str() {
                     "zh-cn" => "zh-CN",
                     "en-us" => "en-US",
@@ -574,9 +536,9 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                     _ if !locale_value.is_empty() => "en-US",
                     _ => "",
                 };
-                // Always inject: set umi_locale and __theme if available,
-                // override Fullscreen API to use native Tauri window API,
-                // and load icon fonts via FontFace API as WebKitGTK fallback.
+                // Inject scripts: localStorage sync, Fullscreen API bridge,
+                // and FontFace API loader (loads icon fonts via fetch+ArrayBuffer,
+                // bypassing CSS @font-face which may fail on WebKitGTK).
                 let inject_script = format!(
                     r#"<script>try{{if("{umi}"&&!localStorage.getItem("umi_locale"))localStorage.setItem("umi_locale","{umi}");if("{theme}"&&!localStorage.getItem("__theme")){{localStorage.setItem("__theme","{theme}");localStorage.setItem("xgen:xgen_theme",JSON.stringify({{type:"String",value:"{theme}"}}))}}}}catch(e){{}}</script><script>(function(){{var _fs=false,_ep="/__yao_desktop/window/fullscreen";function _set(v){{return fetch(_ep,{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{fullscreen:v}})}}).then(function(r){{return r.json()}}).then(function(d){{_fs=d.fullscreen;document.dispatchEvent(new Event("fullscreenchange"))}})}}Object.defineProperty(document,"fullscreenElement",{{configurable:true,get:function(){{return _fs?document.documentElement:null}}}});Object.defineProperty(document,"webkitFullscreenElement",{{configurable:true,get:function(){{return _fs?document.documentElement:null}}}});Element.prototype.requestFullscreen=function(){{return _set(true)}};document.exitFullscreen=function(){{return _set(false)}};Element.prototype.webkitRequestFullscreen=Element.prototype.requestFullscreen;document.webkitExitFullscreen=document.exitFullscreen}})();</script><script>(function(){{var F=[["md_icon_outline","/__yao_admin_root/icon/md_icon_outline.otf"],["md_icon_filled","/__yao_admin_root/icon/md_icon_filled.ttf"],["fa_icon","/__yao_admin_root/icon/fa_icon.woff"],["material_symbols_icon","/__yao_admin_root/icon/material_symbols.woff2"]];F.forEach(function(f){{fetch(f[1]).then(function(r){{return r.arrayBuffer()}}).then(function(b){{var ff=new FontFace(f[0],b);return ff.load()}}).then(function(ff){{document.fonts.add(ff)}}).catch(function(e){{console.warn("FontFace load failed:",f[0],e)}})}})}})()</script>"#,
                     umi = umi_locale,
@@ -584,10 +546,7 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                 );
 
                 let html = String::from_utf8_lossy(&contents);
-                // Insert right after <head> or <head ...> so it runs
-                // before any other <script> or <link> in <head>.
                 let modified = if let Some(head_start) = html.find("<head") {
-                    // Find the closing '>' of the <head> tag
                     if let Some(gt) = html[head_start..].find('>') {
                         let insert_pos = head_start + gt + 1;
                         format!("{}{}{}", &html[..insert_pos], inject_script, &html[insert_pos..])
@@ -595,7 +554,6 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                         format!("{}{}", html, inject_script)
                     }
                 } else {
-                    // No <head> tag; prepend to the whole document
                     format!("{}{}", inject_script, html)
                 };
                 return builder.body(Body::from(modified)).unwrap();
@@ -631,77 +589,9 @@ fn serve_cui_not_built() -> Response {
         .unwrap()
 }
 
-/// Process CSS @font-face rules for WebKitGTK compatibility:
-/// 1. Remove `local(...)` entries — fontconfig (Linux) may fuzzy-match them to
-///    unrelated system fonts, causing the browser to skip the URL entirely.
-/// 2. Inline font file URLs as base64 data URIs — WebKitGTK may silently refuse
-///    to fetch @font-face resources via separate HTTP requests.
-fn inline_css_fonts(css: &str, css_dir: &PathBuf) -> String {
-    let font_exts: &[&str] = &["otf", "ttf", "woff", "woff2", "eot"];
-    let mut result = css.to_string();
-
-    // Step 1: Strip local() entries from @font-face src.
-    // e.g. "local('md_icon'), url(...)" → "url(...)"
-    // This prevents fontconfig fuzzy matching on Linux.
-    result = strip_css_local_refs(&result);
-
-    // Step 2: Replace font file URLs with inline base64 data URIs.
-    // Process both url('...') and url("...")
-    for (open_delim, close_delim) in &[("url('", "'"), ("url(\"", "\"")] {
-        let mut search_from = 0;
-        loop {
-            let start = match result[search_from..].find(open_delim) {
-                Some(pos) => search_from + pos,
-                None => break,
-            };
-            let url_start = start + open_delim.len();
-            let end = match result[url_start..].find(close_delim) {
-                Some(pos) => url_start + pos,
-                None => break,
-            };
-            let url_val = result[url_start..end].to_string();
-
-            // Only process relative paths to font files
-            let is_relative = url_val.starts_with("./") || url_val.starts_with("../")
-                || (!url_val.starts_with("http") && !url_val.starts_with("data:"));
-            let lower = url_val.to_lowercase();
-            let is_font = font_exts.iter().any(|ext| lower.ends_with(ext));
-
-            if is_relative && is_font {
-                let clean = url_val.strip_prefix("./").unwrap_or(&url_val);
-                // Try exact path first, then case-insensitive fallback
-                let font_path = {
-                    let exact = css_dir.join(clean);
-                    if exact.exists() {
-                        Some(exact)
-                    } else {
-                        case_insensitive_lookup(css_dir, clean)
-                    }
-                };
-
-                if let Some(ref fp) = font_path {
-                    if let Ok(data) = std::fs::read(fp) {
-                        let mime = font_mime_for_ext(&lower);
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        let data_uri = format!("data:{};base64,{}", mime, b64);
-                        result = format!("{}{}{}", &result[..url_start], data_uri, &result[end..]);
-                        // Advance past the replacement
-                        search_from = url_start + data_uri.len() + close_delim.len();
-                        continue;
-                    }
-                }
-                debug!("Font file not found for inlining: {}", url_val);
-            }
-
-            search_from = end + close_delim.len();
-        }
-    }
-    result
-}
-
-/// Remove all `local('...')` and `local("...")` entries (with trailing comma/space)
-/// from CSS @font-face src declarations.
-/// e.g. `src: local('md_icon'), url(...) ...` → `src: url(...) ...`
+/// Remove all local() entries from CSS @font-face src declarations.
+/// Prevents fontconfig fuzzy matching on Linux from resolving to wrong fonts.
+/// e.g. "src: local('md_icon'), url(...)" becomes "src: url(...)"
 fn strip_css_local_refs(css: &str) -> String {
     let mut result = css.to_string();
     for (open, close) in &[("local('", "')"), ("local(\"", "\")")] {
@@ -731,19 +621,8 @@ fn strip_css_local_refs(css: &str) -> String {
     result
 }
 
-/// Map font file extension to MIME type (for data URI)
-fn font_mime_for_ext(path: &str) -> &'static str {
-    if path.ends_with(".woff2") { "font/woff2" }
-    else if path.ends_with(".woff") { "font/woff" }
-    else if path.ends_with(".otf") { "font/otf" }
-    else if path.ends_with(".ttf") { "font/ttf" }
-    else if path.ends_with(".eot") { "application/vnd.ms-fontobject" }
-    else { "application/octet-stream" }
-}
-
 /// Case-insensitive file lookup for Linux compatibility.
 /// Walks each path component and matches ignoring ASCII case.
-/// Returns the canonical path if found, or None.
 fn case_insensitive_lookup(base: &PathBuf, relative: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
     let mut current = base.to_path_buf();
