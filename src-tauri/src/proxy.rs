@@ -11,6 +11,7 @@ use tokio::net::TcpListener;
 use tauri::Manager;
 use tracing::{info, error, warn, debug};
 use std::path::PathBuf;
+use base64::Engine as _;
 
 use crate::config::{self, get_proxy_state};
 
@@ -524,6 +525,21 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                     .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             }
 
+            // CSS with @font-face: inline font files as base64 data URIs.
+            // WebKitGTK (Linux) may silently refuse to fetch fonts via separate
+            // HTTP requests even on the same origin. Inlining guarantees they load.
+            if mime.starts_with("text/css") {
+                let css_str = String::from_utf8_lossy(&contents);
+                if css_str.contains("@font-face") {
+                    let css_dir = file_path.parent().unwrap_or(cui_dist);
+                    let modified = inline_css_fonts(&css_str, &css_dir.to_path_buf());
+                    if modified.len() != css_str.len() {
+                        info!("Inlined fonts in CSS ({} -> {} bytes)", contents.len(), modified.len());
+                    }
+                    return builder.body(Body::from(modified)).unwrap();
+                }
+            }
+
             if is_html {
                 // Inject preference cookies (Set-Cookie) so browser JS can read them
                 let jar = config::COOKIE_JAR.read();
@@ -609,6 +625,77 @@ fn serve_cui_not_built() -> Response {
 </body></html>"#
         ))
         .unwrap()
+}
+
+/// Inline font file references in CSS as base64 data URIs.
+/// Replaces `url('./path/to/font.ttf')` with `url('data:font/ttf;base64,...')`.
+/// This ensures fonts load on WebKitGTK (Linux Tauri) where the WebView may
+/// silently refuse to fetch @font-face resources via separate HTTP requests.
+fn inline_css_fonts(css: &str, css_dir: &PathBuf) -> String {
+    let font_exts: &[&str] = &["otf", "ttf", "woff", "woff2", "eot"];
+    let mut result = css.to_string();
+
+    // Process both url('...') and url("...")
+    for (open_delim, close_delim) in &[("url('", "'"), ("url(\"", "\"")] {
+        let mut search_from = 0;
+        loop {
+            let start = match result[search_from..].find(open_delim) {
+                Some(pos) => search_from + pos,
+                None => break,
+            };
+            let url_start = start + open_delim.len();
+            let end = match result[url_start..].find(close_delim) {
+                Some(pos) => url_start + pos,
+                None => break,
+            };
+            let url_val = result[url_start..end].to_string();
+
+            // Only process relative paths to font files
+            let is_relative = url_val.starts_with("./") || url_val.starts_with("../")
+                || (!url_val.starts_with("http") && !url_val.starts_with("data:"));
+            let lower = url_val.to_lowercase();
+            let is_font = font_exts.iter().any(|ext| lower.ends_with(ext));
+
+            if is_relative && is_font {
+                let clean = url_val.strip_prefix("./").unwrap_or(&url_val);
+                // Try exact path first, then case-insensitive fallback
+                let font_path = {
+                    let exact = css_dir.join(clean);
+                    if exact.exists() {
+                        Some(exact)
+                    } else {
+                        case_insensitive_lookup(css_dir, clean)
+                    }
+                };
+
+                if let Some(ref fp) = font_path {
+                    if let Ok(data) = std::fs::read(fp) {
+                        let mime = font_mime_for_ext(&lower);
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                        let data_uri = format!("data:{};base64,{}", mime, b64);
+                        result = format!("{}{}{}", &result[..url_start], data_uri, &result[end..]);
+                        // Advance past the replacement
+                        search_from = url_start + data_uri.len() + close_delim.len();
+                        continue;
+                    }
+                }
+                debug!("Font file not found for inlining: {}", url_val);
+            }
+
+            search_from = end + close_delim.len();
+        }
+    }
+    result
+}
+
+/// Map font file extension to MIME type (for data URI)
+fn font_mime_for_ext(path: &str) -> &'static str {
+    if path.ends_with(".woff2") { "font/woff2" }
+    else if path.ends_with(".woff") { "font/woff" }
+    else if path.ends_with(".otf") { "font/otf" }
+    else if path.ends_with(".ttf") { "font/ttf" }
+    else if path.ends_with(".eot") { "application/vnd.ms-fontobject" }
+    else { "application/octet-stream" }
 }
 
 /// Case-insensitive file lookup for Linux compatibility.
