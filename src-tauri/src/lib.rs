@@ -136,6 +136,7 @@ pub fn run() {
                         let label = format!("popup_{}", n);
                         info!("Creating popup window: {} -> {}", label, final_url);
                         let handle_dl = handle.clone();
+                        let handle_nw = handle.clone();
                         match WebviewWindowBuilder::new(
                             &handle,
                             &label,
@@ -149,6 +150,70 @@ pub fn run() {
                         .disable_drag_drop_handler()
                         .on_document_title_changed(|wv, title| {
                             let _ = wv.set_title(&title);
+                        })
+                        // Handle target="_blank" links inside popup windows
+                        .on_new_window(move |url, _features| {
+                            let url_str = url.to_string();
+                            let h = handle_nw.clone();
+                            info!("Popup new window request: {}", url_str);
+
+                            std::thread::spawn(move || {
+                                // Rewrite URL if it points to the remote server
+                                let state = config::get_proxy_state();
+                                let popup_url = if state.running && !state.server_url.is_empty() {
+                                    let remote = state.server_url.trim_end_matches('/');
+                                    let local_base = format!("http://127.0.0.1:{}", state.port);
+                                    if url_str.starts_with(remote) {
+                                        url_str.replacen(remote, &local_base, 1)
+                                    } else {
+                                        url_str.clone()
+                                    }
+                                } else {
+                                    url_str.clone()
+                                };
+
+                                // File download → download directly
+                                if is_file_download_url(&popup_url) {
+                                    spawn_file_download(h, popup_url);
+                                    return;
+                                }
+
+                                // Other links → open new popup
+                                let p = match url::Url::parse(&popup_url) {
+                                    Ok(u) => u,
+                                    Err(_) => return,
+                                };
+                                let m = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
+                                let lbl = format!("popup_{}", m);
+                                let h_dl2 = h.clone();
+                                let _ = WebviewWindowBuilder::new(&h, &lbl, WebviewUrl::External(p))
+                                    .title("Yao Agents")
+                                    .inner_size(1100.0, 780.0)
+                                    .min_inner_size(600.0, 400.0)
+                                    .center()
+                                    .resizable(true)
+                                    .on_download(move |_wv, event| {
+                                        match event {
+                                            DownloadEvent::Requested { url, destination } => {
+                                                if let Ok(dl) = h_dl2.path().download_dir() {
+                                                    let f = destination.file_name()
+                                                        .map(|f| f.to_string_lossy().to_string())
+                                                        .unwrap_or_else(|| "download".to_string());
+                                                    *destination = dl.join(&f);
+                                                }
+                                                info!("Nested popup download: {} -> {:?}", url.as_str(), destination);
+                                            }
+                                            DownloadEvent::Finished { url, path, success } => {
+                                                info!("Nested popup download done: {} success={} path={:?}", url.as_str(), success, path);
+                                            }
+                                            _ => {}
+                                        }
+                                        true
+                                    })
+                                    .build();
+                            });
+
+                            NewWindowResponse::Deny
                         })
                         .on_download(move |_wv, event| {
                             match event {
