@@ -535,6 +535,9 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                     let modified = inline_css_fonts(&css_str, &css_dir.to_path_buf());
                     if modified.len() != css_str.len() {
                         info!("Inlined fonts in CSS ({} -> {} bytes)", contents.len(), modified.len());
+                        // Use no-cache for transformed CSS so WebKitGTK always
+                        // revalidates (prevents stale cached version without fonts)
+                        builder = builder.header("Cache-Control", "no-cache");
                     }
                     return builder.body(Body::from(modified)).unwrap();
                 }
