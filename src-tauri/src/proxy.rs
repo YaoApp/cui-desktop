@@ -4,6 +4,8 @@ use axum::{
     extract::Request,
     response::Response,
 };
+use axum::extract::ws::{WebSocket, WebSocketUpgrade, Message as AxumMessage};
+use axum::extract::FromRequest;
 use http::{header, HeaderValue, StatusCode};
 use reqwest::Client;
 use tower_http::cors::CorsLayer;
@@ -11,6 +13,8 @@ use tokio::net::TcpListener;
 use tauri::Manager;
 use tracing::{info, error, warn, debug};
 use std::path::PathBuf;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
 use crate::config::{self, get_proxy_state};
 
@@ -131,6 +135,11 @@ async fn handle_request(
             .header(header::LOCATION, "/__yao_admin_root/")
             .body(Body::empty())
             .unwrap();
+    }
+
+    // WebSocket upgrade -> proxy as WebSocket
+    if is_websocket_upgrade(&req) {
+        return handle_ws_proxy(req).await;
     }
 
     // Everything else -> proxy to remote server
@@ -723,5 +732,208 @@ fn guess_mime(path: &PathBuf) -> &'static str {
         Some("txt") => "text/plain; charset=utf-8",
         Some("xml") => "application/xml; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+// ========== WebSocket Proxy ==========
+
+/// Check if the request is a WebSocket upgrade request
+fn is_websocket_upgrade(req: &Request) -> bool {
+    req.headers()
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false)
+}
+
+/// Handle WebSocket proxy: accept client upgrade, connect to remote, bridge both sides
+async fn handle_ws_proxy(req: Request) -> Response {
+    let state = get_proxy_state();
+    if state.server_url.is_empty() {
+        return Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(Body::from("Proxy server URL not configured"))
+            .unwrap();
+    }
+
+    let uri = req.uri().clone();
+    let path_and_query = uri.path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    // Build remote WebSocket URL (http->ws, https->wss)
+    let remote_base = state.server_url.trim_end_matches('/').to_string();
+    let remote_ws_url = if remote_base.starts_with("https://") {
+        format!("wss://{}{}", &remote_base["https://".len()..], path_and_query)
+    } else if remote_base.starts_with("http://") {
+        format!("ws://{}{}", &remote_base["http://".len()..], path_and_query)
+    } else {
+        format!("ws://{}{}", remote_base, path_and_query)
+    };
+
+    info!("WebSocket proxy: {} -> {}", path_and_query, remote_ws_url);
+
+    // Collect cookies and auth token for the upstream connection
+    let browser_cookie_header = req.headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let merged_cookies = config::get_merged_cookies(&browser_cookie_header, path_and_query);
+    let token = state.token.clone();
+
+    // Build extra headers for VNC subprotocols
+    let subprotocols: Vec<String> = req.headers()
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    // Use axum's WebSocketUpgrade extractor to accept the client connection
+    let ws_upgrade = match WebSocketUpgrade::from_request(req, &()).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            error!("WebSocket upgrade failed: {}", e);
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from(format!("WebSocket upgrade failed: {}", e)))
+                .unwrap();
+        }
+    };
+
+    // If the client requested subprotocols, pass them through
+    let ws_upgrade = if !subprotocols.is_empty() {
+        ws_upgrade.protocols(subprotocols)
+    } else {
+        ws_upgrade
+    };
+
+    ws_upgrade.on_upgrade(move |client_ws| async move {
+        if let Err(e) = ws_bridge(client_ws, &remote_ws_url, &merged_cookies, &token).await {
+            error!("WebSocket bridge error: {}", e);
+        }
+    })
+}
+
+/// Bridge a client WebSocket to a remote WebSocket
+async fn ws_bridge(
+    client_ws: WebSocket,
+    remote_url: &str,
+    cookies: &str,
+    token: &str,
+) -> Result<(), String> {
+    use tokio_tungstenite::connect_async_tls_with_config;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    // Build the upstream request with auth headers
+    let mut request = remote_url.into_client_request()
+        .map_err(|e| format!("Invalid WebSocket URL: {}", e))?;
+
+    let headers = request.headers_mut();
+    if !cookies.is_empty() {
+        if let Ok(v) = HeaderValue::from_str(cookies) {
+            headers.insert("cookie", v);
+        }
+    }
+    if !token.is_empty() {
+        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+            headers.insert("authorization", v);
+        }
+    }
+
+    // Connect to the remote WebSocket server
+    let (remote_ws, resp) = connect_async_tls_with_config(request, None, false, None)
+        .await
+        .map_err(|e| format!("Failed to connect to remote WebSocket: {}", e))?;
+
+    info!("Remote WebSocket connected (status: {})", resp.status());
+
+    let (mut client_sink, mut client_stream) = client_ws.split();
+    let (mut remote_sink, mut remote_stream) = remote_ws.split();
+
+    // client -> remote
+    let client_to_remote = tokio::spawn(async move {
+        while let Some(msg) = client_stream.next().await {
+            match msg {
+                Ok(axum_msg) => {
+                    let tung_msg = axum_to_tungstenite(axum_msg);
+                    if let Some(m) = tung_msg {
+                        if remote_sink.send(m).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Client WebSocket read error: {}", e);
+                    break;
+                }
+            }
+        }
+        let _ = remote_sink.close().await;
+    });
+
+    // remote -> client
+    let remote_to_client = tokio::spawn(async move {
+        while let Some(msg) = remote_stream.next().await {
+            match msg {
+                Ok(tung_msg) => {
+                    let axum_msg = tungstenite_to_axum(tung_msg);
+                    if let Some(m) = axum_msg {
+                        if client_sink.send(m).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Remote WebSocket read error: {}", e);
+                    break;
+                }
+            }
+        }
+        let _ = client_sink.close().await;
+    });
+
+    // Wait for either direction to finish, then abort the other
+    tokio::select! {
+        _ = client_to_remote => {},
+        _ = remote_to_client => {},
+    }
+
+    info!("WebSocket bridge closed");
+    Ok(())
+}
+
+/// Convert axum WebSocket Message to tungstenite Message
+fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungsteniteMessage> {
+    match msg {
+        AxumMessage::Text(s) => Some(TungsteniteMessage::Text(s.to_string().into())),
+        AxumMessage::Binary(b) => Some(TungsteniteMessage::Binary(b)),
+        AxumMessage::Ping(b) => Some(TungsteniteMessage::Ping(b)),
+        AxumMessage::Pong(b) => Some(TungsteniteMessage::Pong(b)),
+        AxumMessage::Close(frame) => {
+            let tung_frame = frame.map(|f| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(f.code),
+                reason: f.reason.to_string().into(),
+            });
+            Some(TungsteniteMessage::Close(tung_frame))
+        }
+    }
+}
+
+/// Convert tungstenite Message to axum WebSocket Message
+fn tungstenite_to_axum(msg: TungsteniteMessage) -> Option<AxumMessage> {
+    match msg {
+        TungsteniteMessage::Text(s) => Some(AxumMessage::Text(s.to_string().into())),
+        TungsteniteMessage::Binary(b) => Some(AxumMessage::Binary(b.into())),
+        TungsteniteMessage::Ping(b) => Some(AxumMessage::Ping(b.into())),
+        TungsteniteMessage::Pong(b) => Some(AxumMessage::Pong(b.into())),
+        TungsteniteMessage::Close(frame) => {
+            let axum_frame = frame.map(|f| axum::extract::ws::CloseFrame {
+                code: f.code.into(),
+                reason: f.reason.to_string().into(),
+            });
+            Some(AxumMessage::Close(axum_frame))
+        }
+        TungsteniteMessage::Frame(_) => None,
     }
 }
