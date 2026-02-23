@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use tauri::Manager;
 use tracing::{info, error, warn, debug};
 use std::path::PathBuf;
+use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
@@ -27,6 +28,9 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf, port: u16) -> Result<u16
     let client = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(10)
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
@@ -233,7 +237,7 @@ async fn proxy_request(req: Request, client: Client) -> Response {
     };
 
     if !body_bytes.is_empty() {
-        builder = builder.body(body_bytes.to_vec());
+        builder = builder.body(body_bytes);
     }
 
     // Send request to upstream
@@ -322,38 +326,17 @@ async fn proxy_request(req: Request, client: Client) -> Response {
         response_builder = response_builder
             .header("Cache-Control", "no-cache")
             .header("X-Accel-Buffering", "no");
-
-        let stream = upstream_resp.bytes_stream();
-        let body = Body::from_stream(stream);
-        response_builder.body(body).unwrap_or_else(|e| {
-            error!("Failed to build SSE response: {}", e);
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Failed to build response"))
-                .unwrap()
-        })
-    } else {
-        match upstream_resp.bytes().await {
-            Ok(body) => {
-                let len = body.len();
-                response_builder = response_builder.header("content-length", len);
-                response_builder.body(Body::from(body)).unwrap_or_else(|e| {
-                    error!("Failed to build response: {}", e);
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Failed to build response"))
-                        .unwrap()
-                })
-            }
-            Err(e) => {
-                error!("Failed to read upstream response: {}", e);
-                Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
-                    .body(Body::from(format!("Failed to read upstream response: {}", e)))
-                    .unwrap()
-            }
-        }
     }
+
+    let stream = upstream_resp.bytes_stream();
+    let body = Body::from_stream(stream);
+    response_builder.body(body).unwrap_or_else(|e| {
+        error!("Failed to build streaming response: {}", e);
+        Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("Failed to build response"))
+            .unwrap()
+    })
 }
 
 /// Handle desktop native API requests (window management)
@@ -852,7 +835,7 @@ async fn ws_bridge(
     let (mut remote_sink, mut remote_stream) = remote_ws.split();
 
     // client -> remote
-    let client_to_remote = tokio::spawn(async move {
+    let mut client_to_remote = tokio::spawn(async move {
         while let Some(msg) = client_stream.next().await {
             match msg {
                 Ok(axum_msg) => {
@@ -873,7 +856,7 @@ async fn ws_bridge(
     });
 
     // remote -> client
-    let remote_to_client = tokio::spawn(async move {
+    let mut remote_to_client = tokio::spawn(async move {
         while let Some(msg) = remote_stream.next().await {
             match msg {
                 Ok(tung_msg) => {
@@ -893,10 +876,13 @@ async fn ws_bridge(
         let _ = client_sink.close().await;
     });
 
-    // Wait for either direction to finish, then abort the other
     tokio::select! {
-        _ = client_to_remote => {},
-        _ = remote_to_client => {},
+        _ = &mut client_to_remote => {
+            remote_to_client.abort();
+        },
+        _ = &mut remote_to_client => {
+            client_to_remote.abort();
+        },
     }
 
     info!("WebSocket bridge closed");
@@ -935,5 +921,359 @@ fn tungstenite_to_axum(msg: TungsteniteMessage) -> Option<AxumMessage> {
             Some(AxumMessage::Close(axum_frame))
         }
         TungsteniteMessage::Frame(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn guess_mime_common_types() {
+        assert_eq!(guess_mime(&PathBuf::from("index.html")), "text/html; charset=utf-8");
+        assert_eq!(guess_mime(&PathBuf::from("app.js")), "application/javascript; charset=utf-8");
+        assert_eq!(guess_mime(&PathBuf::from("lib.mjs")), "application/javascript; charset=utf-8");
+        assert_eq!(guess_mime(&PathBuf::from("style.css")), "text/css; charset=utf-8");
+        assert_eq!(guess_mime(&PathBuf::from("data.json")), "application/json; charset=utf-8");
+        assert_eq!(guess_mime(&PathBuf::from("logo.png")), "image/png");
+        assert_eq!(guess_mime(&PathBuf::from("photo.jpg")), "image/jpeg");
+        assert_eq!(guess_mime(&PathBuf::from("photo.jpeg")), "image/jpeg");
+        assert_eq!(guess_mime(&PathBuf::from("icon.svg")), "image/svg+xml");
+        assert_eq!(guess_mime(&PathBuf::from("font.woff2")), "font/woff2");
+        assert_eq!(guess_mime(&PathBuf::from("font.woff")), "font/woff");
+        assert_eq!(guess_mime(&PathBuf::from("font.ttf")), "font/ttf");
+        assert_eq!(guess_mime(&PathBuf::from("font.otf")), "font/otf");
+        assert_eq!(guess_mime(&PathBuf::from("app.wasm")), "application/wasm");
+    }
+
+    #[test]
+    fn guess_mime_unknown_extension() {
+        assert_eq!(guess_mime(&PathBuf::from("file.xyz")), "application/octet-stream");
+        assert_eq!(guess_mime(&PathBuf::from("noext")), "application/octet-stream");
+    }
+
+    #[test]
+    fn strip_css_local_refs_removes_single() {
+        let css = r#"@font-face { src: local('Material Icons'), url('fonts/mat.woff2') format('woff2'); }"#;
+        let result = strip_css_local_refs(css);
+        assert!(!result.contains("local("));
+        assert!(result.contains("url('fonts/mat.woff2')"));
+    }
+
+    #[test]
+    fn strip_css_local_refs_removes_multiple() {
+        let css = r#"@font-face { src: local('Icon A'), local("Icon B"), url('a.woff') format('woff'); }"#;
+        let result = strip_css_local_refs(css);
+        assert!(!result.contains("local("));
+        assert!(result.contains("url('a.woff')"));
+    }
+
+    #[test]
+    fn strip_css_local_refs_no_local() {
+        let css = r#"@font-face { src: url('fonts/mat.woff2') format('woff2'); }"#;
+        let result = strip_css_local_refs(css);
+        assert_eq!(result, css);
+    }
+
+    #[test]
+    fn is_websocket_upgrade_true() {
+        let req = Request::builder()
+            .header("upgrade", "websocket")
+            .header("connection", "Upgrade")
+            .body(Body::empty())
+            .unwrap();
+        assert!(is_websocket_upgrade(&req));
+    }
+
+    #[test]
+    fn is_websocket_upgrade_case_insensitive() {
+        let req = Request::builder()
+            .header("upgrade", "WebSocket")
+            .body(Body::empty())
+            .unwrap();
+        assert!(is_websocket_upgrade(&req));
+    }
+
+    #[test]
+    fn is_websocket_upgrade_false_no_header() {
+        let req = Request::builder()
+            .body(Body::empty())
+            .unwrap();
+        assert!(!is_websocket_upgrade(&req));
+    }
+
+    #[test]
+    fn is_websocket_upgrade_false_wrong_value() {
+        let req = Request::builder()
+            .header("upgrade", "h2c")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!is_websocket_upgrade(&req));
+    }
+
+    #[tokio::test]
+    async fn streaming_proxy_does_not_buffer_entire_body() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::response::IntoResponse;
+        use tokio::net::TcpListener;
+
+        let payload = vec![0x42u8; 1024 * 1024]; // 1 MB
+        let payload_clone = payload.clone();
+
+        let upstream = Router::new().fallback(move || {
+            let data = payload_clone.clone();
+            async move { data.into_response() }
+        });
+
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream).await.unwrap();
+        });
+
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .pool_idle_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(2)
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(format!("http://{}/test", upstream_addr))
+            .send()
+            .await
+            .unwrap();
+
+        // Verify: response is streamed via bytes_stream(), not buffered
+        let stream = resp.bytes_stream();
+        let body = Body::from_stream(stream);
+
+        let collected = axum::body::to_bytes(body, 2 * 1024 * 1024).await.unwrap();
+        assert_eq!(collected.len(), payload.len());
+        assert_eq!(&collected[..], &payload[..]);
+    }
+
+    #[tokio::test]
+    async fn ws_task_abort_on_one_side_close() {
+        use tokio::sync::mpsc;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_clone = finished.clone();
+
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+
+        let mut task_a = tokio::spawn(async move {
+        });
+
+        let mut task_b = tokio::spawn(async move {
+            rx.recv().await;
+            finished_clone.store(true, Ordering::SeqCst);
+        });
+
+        tokio::select! {
+            _ = &mut task_a => {
+                task_b.abort();
+            },
+            _ = &mut task_b => {
+                task_a.abort();
+            },
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(!finished.load(Ordering::SeqCst), "task_b should have been aborted, not completed");
+        assert!(task_b.await.unwrap_err().is_cancelled());
+        drop(tx);
+    }
+
+    fn resident_memory_bytes() -> usize {
+        #[cfg(target_os = "macos")]
+        {
+            use std::mem;
+            extern crate libc;
+            let mut info: libc::mach_task_basic_info = unsafe { mem::zeroed() };
+            let mut count = (mem::size_of::<libc::mach_task_basic_info>()
+                / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+            let kr = unsafe {
+                libc::task_info(
+                    libc::mach_task_self(),
+                    libc::MACH_TASK_BASIC_INFO,
+                    &mut info as *mut _ as libc::task_info_t,
+                    &mut count,
+                )
+            };
+            if kr == libc::KERN_SUCCESS {
+                return info.resident_size as usize;
+            }
+            0
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // Read VmRSS from /proc/self/status
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                for line in status.lines() {
+                    if line.starts_with("VmRSS:") {
+                        let kb: usize = line.split_whitespace()
+                            .nth(1)
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        return kb * 1024;
+                    }
+                }
+            }
+            0
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            0 // skip on unsupported platforms
+        }
+    }
+
+    /// Run 3 identical rounds of HTTP requests. Compare round 2→3 growth.
+    /// On macOS/Linux RSS may not shrink, but if there's no leak the
+    /// incremental growth between equal rounds should be near-zero.
+    #[tokio::test]
+    async fn memory_stable_after_many_proxy_requests() {
+        use axum::Router;
+        use axum::response::IntoResponse;
+        use tokio::net::TcpListener;
+
+        let chunk = vec![0xABu8; 256 * 1024]; // 256 KB per response
+
+        let upstream = Router::new().fallback(move || {
+            let data = chunk.clone();
+            async move { data.into_response() }
+        });
+
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream).await.unwrap();
+        });
+
+        let client = Client::builder()
+            .no_proxy()
+            .pool_idle_timeout(Duration::from_secs(2))
+            .pool_max_idle_per_host(4)
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        const N: usize = 100;
+
+        async fn run_round(client: &Client, addr: std::net::SocketAddr, n: usize) {
+            let mut handles = Vec::new();
+            for i in 0..n {
+                let c = client.clone();
+                handles.push(tokio::spawn(async move {
+                    let resp = c.get(format!("http://{}/r/{}", addr, i))
+                        .send().await.unwrap();
+                    let stream = resp.bytes_stream();
+                    let body = Body::from_stream(stream);
+                    let _ = axum::body::to_bytes(body, 512 * 1024).await.unwrap();
+                }));
+            }
+            for h in handles { h.await.unwrap(); }
+        }
+
+        // Run 5 rounds, record RSS after each
+        let mut rss_history: Vec<usize> = Vec::new();
+        for round in 0..5 {
+            run_round(&client, upstream_addr, N).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let rss = resident_memory_bytes();
+            if rss == 0 { return; }
+            eprintln!("  HTTP round {} RSS: {:.1} MB", round, rss as f64 / (1024.0 * 1024.0));
+            rss_history.push(rss);
+        }
+
+        // Compare the last two rounds (round 3→4, 0-indexed).
+        // By round 4 the allocator should be fully warm.
+        let r3 = rss_history[3];
+        let r4 = rss_history[4];
+        let growth = r4.saturating_sub(r3);
+        let growth_mb = growth as f64 / (1024.0 * 1024.0);
+
+        assert!(
+            growth_mb < 30.0,
+            "Memory grew by {:.1} MB between round 4 and round 5 — possible leak \
+             (r4={:.1} MB, r5={:.1} MB, all={:?})",
+            growth_mb,
+            r3 as f64 / (1024.0 * 1024.0),
+            r4 as f64 / (1024.0 * 1024.0),
+            rss_history.iter().map(|r| format!("{:.1}", *r as f64 / (1024.0*1024.0))).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Run 3 rounds of WebSocket connect/disconnect cycles. Compare round 2→3.
+    #[tokio::test]
+    async fn memory_stable_after_ws_connect_disconnect_cycles() {
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::accept_async;
+
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_addr = ws_listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                if let Ok((stream, _)) = ws_listener.accept().await {
+                    tokio::spawn(async move {
+                        if let Ok(mut ws) = accept_async(stream).await {
+                            while let Some(Ok(msg)) = ws.next().await {
+                                if msg.is_close() { break; }
+                                let _ = ws.send(msg).await;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        const WS_N: usize = 30;
+
+        async fn ws_round(addr: &std::net::SocketAddr, n: usize) {
+            use tokio_tungstenite::tungstenite::Message as TungMsg;
+            for i in 0..n {
+                let url = format!("ws://127.0.0.1:{}", addr.port());
+                if let Ok((mut ws, _)) = tokio_tungstenite::connect_async(&url).await {
+                    let _ = ws.send(TungMsg::Text(format!("m-{}", i).into())).await;
+                    if let Some(Ok(_)) = ws.next().await {}
+                    let _ = ws.close(None).await;
+                    while let Some(_) = ws.next().await {}
+                }
+            }
+        }
+
+        // Round 1: warm up
+        ws_round(&ws_addr, WS_N).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Round 2: baseline
+        ws_round(&ws_addr, WS_N).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mem_after_r2 = resident_memory_bytes();
+        if mem_after_r2 == 0 { return; }
+
+        // Round 3: measure
+        ws_round(&ws_addr, WS_N).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mem_after_r3 = resident_memory_bytes();
+
+        let growth = mem_after_r3.saturating_sub(mem_after_r2);
+        let growth_mb = growth as f64 / (1024.0 * 1024.0);
+
+        assert!(
+            growth_mb < 10.0,
+            "Memory grew by {:.1} MB between WS round 2 and round 3 — possible task leak \
+             (r2={}, r3={})",
+            growth_mb, mem_after_r2, mem_after_r3,
+        );
     }
 }

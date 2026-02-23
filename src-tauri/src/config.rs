@@ -332,3 +332,168 @@ pub fn clear_cookies() {
 pub fn cookie_count() -> usize {
     COOKIE_JAR.read().len()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn reset_jar() {
+        COOKIE_JAR.write().clear();
+    }
+
+    #[test]
+    fn store_simple_cookie() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        let result = store_cookie("session=abc123; Path=/; HttpOnly");
+        assert!(!result.is_secure);
+        assert!(result.browser_cookie.is_some());
+        let bc = result.browser_cookie.unwrap();
+        assert!(bc.contains("session=abc123"));
+        assert!(bc.contains("HttpOnly"));
+
+        let jar = COOKIE_JAR.read();
+        assert_eq!(jar.len(), 1);
+        assert_eq!(jar[0].name, "session");
+        assert_eq!(jar[0].value, "abc123");
+        assert!(jar[0].http_only);
+    }
+
+    #[test]
+    fn store_secure_cookie_not_forwarded() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        let result = store_cookie("__Secure-token=xyz; Path=/; Secure; HttpOnly");
+        assert!(result.is_secure);
+        assert!(result.browser_cookie.is_none());
+
+        let jar = COOKIE_JAR.read();
+        assert_eq!(jar.len(), 1);
+        assert_eq!(jar[0].name, "__Secure-token");
+    }
+
+    #[test]
+    fn store_cookie_with_secure_flag() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        let result = store_cookie("id=42; Path=/; Secure");
+        assert!(result.is_secure);
+        assert!(result.browser_cookie.is_none());
+    }
+
+    #[test]
+    fn store_cookie_strips_domain_and_samesite_none() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        let result = store_cookie("tok=v; Path=/; Domain=example.com; SameSite=None; Secure");
+        assert!(result.is_secure);
+
+        reset_jar();
+        let result = store_cookie("tok=v; Path=/; Domain=example.com; SameSite=None");
+        assert!(!result.is_secure);
+        let bc = result.browser_cookie.unwrap();
+        assert!(!bc.contains("Domain="));
+        assert!(!bc.contains("SameSite=None"));
+        assert!(bc.contains("SameSite=Lax"));
+    }
+
+    #[test]
+    fn store_cookie_upsert() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        store_cookie("key=old; Path=/");
+        store_cookie("key=new; Path=/");
+        let jar = COOKIE_JAR.read();
+        assert_eq!(jar.len(), 1);
+        assert_eq!(jar[0].value, "new");
+    }
+
+    #[test]
+    fn store_cookie_max_age_zero_deletes() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        store_cookie("key=val; Path=/");
+        assert_eq!(cookie_count(), 1);
+        store_cookie("key=val; Path=/; Max-Age=0");
+        assert_eq!(cookie_count(), 0);
+    }
+
+    #[test]
+    fn store_cookie_empty_name_ignored() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        let result = store_cookie("=value; Path=/");
+        assert!(!result.is_secure);
+        assert!(result.browser_cookie.is_none());
+        assert_eq!(cookie_count(), 0);
+    }
+
+    #[test]
+    fn get_merged_cookies_browser_and_jar() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        store_cookie("jar_only=secret; Path=/");
+        let merged = get_merged_cookies("browser_cookie=visible", "/api/test");
+        assert!(merged.contains("jar_only=secret"));
+        assert!(merged.contains("browser_cookie=visible"));
+    }
+
+    #[test]
+    fn get_merged_cookies_jar_wins_conflict() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        store_cookie("token=from_jar; Path=/");
+        let merged = get_merged_cookies("token=from_browser", "/");
+        assert!(merged.contains("token=from_jar"));
+        assert!(!merged.contains("from_browser"));
+    }
+
+    #[test]
+    fn get_merged_cookies_path_filtering() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        store_cookie("a=1; Path=/api");
+        store_cookie("b=2; Path=/web");
+        let merged = get_merged_cookies("", "/api/data");
+        assert!(merged.contains("a=1"));
+        assert!(!merged.contains("b=2"));
+    }
+
+    #[test]
+    fn get_merged_cookies_empty() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        let merged = get_merged_cookies("", "/");
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn clear_cookies_empties_jar() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        reset_jar();
+        store_cookie("a=1; Path=/");
+        store_cookie("b=2; Path=/");
+        assert_eq!(cookie_count(), 2);
+        clear_cookies();
+        assert_eq!(cookie_count(), 0);
+    }
+
+    #[test]
+    fn update_proxy_state_normalizes_dashboard() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        update_proxy_state("http://example.com", "tok", "openapi", "dashboard/");
+        let s = get_proxy_state();
+        assert_eq!(s.dashboard, "/dashboard");
+
+        update_proxy_state("http://example.com", "tok", "openapi", "/admin/");
+        let s = get_proxy_state();
+        assert_eq!(s.dashboard, "/admin");
+
+        update_proxy_state("http://example.com", "tok", "openapi", "");
+        let s = get_proxy_state();
+        assert_eq!(s.dashboard, "");
+    }
+}
