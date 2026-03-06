@@ -304,31 +304,65 @@ pub fn run() {
             commands::clear_cookies,
             commands::set_preference_cookies,
             commands::set_window_theme,
+            commands::set_ui_language,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to start Tauri application");
 }
 
+/// Build the tray menu with localized labels
+fn build_tray_menu<R: tauri::Runtime>(app: &impl Manager<R>) -> Result<Menu<R>, Box<dyn std::error::Error>> {
+    let show = MenuItem::with_id(app, "show", config::tray_label("show"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", config::tray_label("quit"), true, None::<&str>)?;
+    Ok(Menu::with_items(app, &[&show, &quit])?)
+}
+
+/// When the window is restored from tray, check if it's showing a stale proxy page.
+/// If the proxy isn't running but the webview URL points to it, navigate back to the shell UI.
+fn restore_if_stale(win: &tauri::WebviewWindow) {
+    let url = win.url();
+    if let Ok(u) = url {
+        let url_str = u.as_str();
+        // If on proxy URL but proxy is not running → go back to shell
+        if url_str.starts_with("http://127.0.0.1") {
+            let state = config::get_proxy_state();
+            if !state.running {
+                info!("Proxy not running, navigating back to shell UI");
+                let _ = win.navigate("tauri://localhost".parse().unwrap());
+            }
+        }
+    }
+}
+
+/// Rebuild the tray menu (called when language changes)
+pub fn rebuild_tray(app: &tauri::AppHandle) {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        if let Ok(menu) = build_tray_menu(app) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
 /// Set up the system tray icon and menu
 fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = build_tray_menu(app)?;
 
     // Load the tray icon: monochrome template on macOS, colored on Windows/Linux
     let icon = load_tray_icon(app);
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .icon_as_template(cfg!(target_os = "macos")) // macOS: monochrome template; others: colored
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Yao Agents")
         .menu(&menu)
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
                 "show" => {
                     if let Some(win) = app.get_webview_window("main") {
                         let _ = win.show();
                         let _ = win.set_focus();
+                        restore_if_stale(&win);
                     }
                 }
                 "quit" => {
@@ -339,7 +373,6 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .on_tray_icon_event(|tray, event| {
-            // Left-click on tray icon → show and focus main window
             if let tauri::tray::TrayIconEvent::Click {
                 button: tauri::tray::MouseButton::Left,
                 button_state: tauri::tray::MouseButtonState::Up,
@@ -349,6 +382,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = win.show();
                     let _ = win.unminimize();
                     let _ = win.set_focus();
+                    restore_if_stale(&win);
                 }
             }
         })

@@ -78,3 +78,8 @@ export async function setPreferenceCookies(locale: string, theme: string): Promi
 export async function setWindowTheme(theme: string): Promise<void> {
   return invoke<void>("set_window_theme", { theme });
 }
+
+/** Sync UI language to Rust side (persists + rebuilds tray menu) */
+export async function setUiLanguage(lang: string): Promise<void> {
+  return invoke<void>("set_ui_language", { lang });
+}

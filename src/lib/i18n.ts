@@ -98,9 +98,10 @@ export function getLang(): string {
   return sys.startsWith("zh") ? "zh" : "en";
 }
 
-/** Set language override and persist */
+/** Set language override, persist, and sync tray menu */
 export function setLang(lang: string): void {
   localStorage.setItem(LANG_KEY, lang);
+  import("./api").then((api) => api.setUiLanguage(lang)).catch(() => {});
 }
 
 /** Get locale string for CUI cookie (e.g. "zh-cn", "en-us") */
@@ -148,3 +149,6 @@ export function getThemeForCUI(): string {
 
 // Apply on load
 applyTheme();
+
+// Sync initial language to Rust (tray menu)
+import("./api").then((api) => api.setUiLanguage(getLang())).catch(() => {});

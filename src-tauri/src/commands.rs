@@ -167,6 +167,13 @@ pub async fn set_window_theme(app: AppHandle, theme: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Set UI language and rebuild tray menu with localized labels
+#[tauri::command]
+pub fn set_ui_language(app: AppHandle, lang: String) {
+    config::save_ui_lang(&lang);
+    crate::rebuild_tray(&app);
+}
+
 /// Set user preference cookies (__locale, __theme) in the cookie jar.
 /// These are sent to the server and injected into browser on CUI page load.
 #[tauri::command]

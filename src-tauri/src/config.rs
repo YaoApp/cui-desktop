@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use tauri::Manager;
 use tracing::{info, warn};
 
 // ========== Global AppHandle ==========
@@ -331,6 +332,45 @@ pub fn clear_cookies() {
 /// Get the number of stored cookies
 pub fn cookie_count() -> usize {
     COOKIE_JAR.read().len()
+}
+
+// ========== UI Language ==========
+
+/// Read the UI language from {app_data_dir}/lang.txt
+pub fn get_ui_lang() -> String {
+    if let Some(handle) = get_app_handle() {
+        if let Ok(dir) = handle.path().app_data_dir() {
+            if let Ok(s) = std::fs::read_to_string(dir.join("lang.txt")) {
+                let lang = s.trim().to_string();
+                if lang == "zh" || lang == "en" {
+                    return lang;
+                }
+            }
+        }
+    }
+    "en".to_string()
+}
+
+/// Persist the UI language to {app_data_dir}/lang.txt
+pub fn save_ui_lang(lang: &str) {
+    if let Some(handle) = get_app_handle() {
+        if let Ok(dir) = handle.path().app_data_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("lang.txt"), lang);
+        }
+    }
+}
+
+/// Return a localized tray menu label based on the current UI language
+pub fn tray_label(key: &str) -> String {
+    let lang = get_ui_lang();
+    match (key, lang.as_str()) {
+        ("show", "zh") => "显示窗口".into(),
+        ("quit", "zh") => "退出".into(),
+        ("show", _) => "Show Window".into(),
+        ("quit", _) => "Quit".into(),
+        _ => key.into(),
+    }
 }
 
 #[cfg(test)]
