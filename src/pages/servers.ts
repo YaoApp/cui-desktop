@@ -30,6 +30,7 @@ export async function renderServers(): Promise<void> {
     // Store not initialized yet
   }
 
+
   // Merge config presets + user servers
   const allServers = mergeServers(settings.servers, conf.servers);
 
@@ -98,6 +99,7 @@ export async function renderServers(): Promise<void> {
 function serverItem(s: MergedServer, activeUrl: string): string {
   const active = s.url === activeUrl ? " active" : "";
   const badge = s.source === "config" ? `<span class="badge-preset">${escapeHtml(t("app.default"))}</span>` : "";
+  const actionBtn = `<button class="btn-main btn-sm connect-btn" data-url="${esc(s.url)}" data-label="${esc(s.label)}">${escapeHtml(t("app.connect"))}</button>`;
 
   return `
     <div class="server-item${active}">
@@ -106,7 +108,7 @@ function serverItem(s: MergedServer, activeUrl: string): string {
         <div class="server-url">${escapeHtml(s.url)}</div>
       </div>
       <div class="server-actions">
-        <button class="btn-main btn-sm connect-btn" data-url="${esc(s.url)}" data-label="${esc(s.label)}">${escapeHtml(t("app.connect"))}</button>
+        ${actionBtn}
         ${s.source === "user" ? `<button class="btn-icon remove-btn" data-url="${esc(s.url)}" title="${esc(t("app.remove"))}">&times;</button>` : ""}
       </div>
     </div>

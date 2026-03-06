@@ -24,6 +24,8 @@ const zhCN: Record<string, string> = {
   "app.remove": "移除",
   "app.settings": "设置",
   "app.loading_cui": "正在加载 CUI…",
+  "app.connected_status": "已连接",
+  "app.resume": "恢复",
 
   "settings.title": "设置",
   "settings.back": "← 返回",
@@ -61,6 +63,8 @@ const enUS: Record<string, string> = {
   "app.remove": "Remove",
   "app.settings": "Settings",
   "app.loading_cui": "Loading CUI…",
+  "app.connected_status": "Connected",
+  "app.resume": "Resume",
 
   "settings.title": "Settings",
   "settings.back": "← Back",

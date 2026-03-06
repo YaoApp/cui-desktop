@@ -90,6 +90,7 @@ async fn handle_request(
         return serve_bridge_page(&req);
     }
 
+
     // CUI static assets -- served locally
     if path.starts_with("/__yao_admin_root/") {
         return serve_cui_static(path, &cui_dist).await;

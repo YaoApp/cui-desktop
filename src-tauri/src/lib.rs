@@ -30,6 +30,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Load developer config.json at startup
             load_app_conf_from_resources(app.handle());
@@ -313,8 +314,9 @@ pub fn run() {
 /// Build the tray menu with localized labels
 fn build_tray_menu<R: tauri::Runtime>(app: &impl Manager<R>) -> Result<Menu<R>, Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", config::tray_label("show"), true, None::<&str>)?;
+    let servers = MenuItem::with_id(app, "servers", config::tray_label("servers"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", config::tray_label("quit"), true, None::<&str>)?;
-    Ok(Menu::with_items(app, &[&show, &quit])?)
+    Ok(Menu::with_items(app, &[&show, &servers, &quit])?)
 }
 
 /// When the window is restored from tray, check if it's showing a stale proxy page.
@@ -363,6 +365,32 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = win.show();
                         let _ = win.set_focus();
                         restore_if_stale(&win);
+                    }
+                }
+                "servers" => {
+                    let handle = app.clone();
+                    if let Some(win) = handle.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                        let state = config::get_proxy_state();
+                        if state.running {
+                            use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+                            let msg = config::tray_label("switch_confirm");
+                            let title = config::tray_label("servers");
+                            handle.dialog()
+                                .message(msg)
+                                .title(title)
+                                .buttons(MessageDialogButtons::OkCancel)
+                                .show(move |confirmed| {
+                                    if confirmed {
+                                        if let Some(w) = handle.get_webview_window("main") {
+                                            let _ = w.navigate("tauri://localhost".parse().unwrap());
+                                        }
+                                    }
+                                });
+                        } else {
+                            let _ = win.navigate("tauri://localhost".parse().unwrap());
+                        }
                     }
                 }
                 "quit" => {

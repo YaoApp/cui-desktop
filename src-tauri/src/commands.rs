@@ -104,8 +104,15 @@ pub async fn start_proxy(
 ) -> Result<u16, String> {
     let state = config::get_proxy_state();
     if state.running {
-        config::update_proxy_state(&server_url, &token, &auth_mode, &dashboard);
-        info!("Proxy config updated (dashboard={})", dashboard);
+        let server_changed = state.server_url != server_url;
+        if server_changed {
+            config::clear_cookies();
+            info!("Server changed from {} to {}, cookies cleared", state.server_url, server_url);
+        }
+        let effective_token = if token.is_empty() && !server_changed { &state.token } else { &token };
+        let effective_auth = if auth_mode.is_empty() && !server_changed { &state.auth_mode } else { &auth_mode };
+        config::update_proxy_state(&server_url, effective_token, effective_auth, &dashboard);
+        info!("Proxy config updated (server={}, dashboard={})", server_url, dashboard);
         return Ok(state.port);
     }
 
@@ -173,6 +180,7 @@ pub fn set_ui_language(app: AppHandle, lang: String) {
     config::save_ui_lang(&lang);
     crate::rebuild_tray(&app);
 }
+
 
 /// Set user preference cookies (__locale, __theme) in the cookie jar.
 /// These are sent to the server and injected into browser on CUI page load.

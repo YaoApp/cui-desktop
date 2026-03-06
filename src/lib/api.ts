@@ -83,3 +83,4 @@ export async function setWindowTheme(theme: string): Promise<void> {
 export async function setUiLanguage(lang: string): Promise<void> {
   return invoke<void>("set_ui_language", { lang });
 }
+
