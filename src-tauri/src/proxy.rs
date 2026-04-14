@@ -353,12 +353,77 @@ async fn handle_desktop_api(req: Request) -> Response {
     let path = req.uri().path();
     match path {
         "/__yao_desktop/window/fullscreen" => handle_window_fullscreen(req).await,
+        "/__yao_desktop/reveal" => handle_reveal_file(req).await,
         _ => Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header("Content-Type", "application/json")
             .body(Body::from(r#"{"error":"not found"}"#))
             .unwrap(),
     }
+}
+
+/// Reveal a downloaded file in the system file manager.
+/// Only allows paths inside the user's Downloads directory.
+async fn handle_reveal_file(req: Request) -> Response {
+    if req.method() != http::Method::POST {
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    let body = axum::body::to_bytes(req.into_body(), 4096)
+        .await
+        .unwrap_or_default();
+
+    let file_path: String = match serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("path")?.as_str().map(|s| s.to_string()))
+    {
+        Some(p) => p,
+        None => return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"error":"missing path"}"#))
+            .unwrap(),
+    };
+
+    let target = std::path::Path::new(&file_path);
+
+    let app_handle = match config::get_app_handle() {
+        Some(h) => h,
+        None => return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"error":"app not ready"}"#))
+            .unwrap(),
+    };
+
+    if let Ok(dl_dir) = app_handle.path().download_dir() {
+        if !target.starts_with(&dl_dir) {
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"error":"path not in Downloads"}"#))
+                .unwrap();
+        }
+    }
+
+    info!("Reveal file: {}", file_path);
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg("-R").arg(&file_path).spawn(); }
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,\"{}\"", file_path)).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open")
+        .arg(target.parent().unwrap_or(std::path::Path::new("."))).spawn(); }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"ok":true}"#))
+        .unwrap()
 }
 
 /// Toggle or query window fullscreen state.
