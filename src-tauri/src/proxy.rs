@@ -520,7 +520,7 @@ try {{
   if ("{theme}") document.cookie = "__theme={theme};" + exp;
   else document.cookie = "__theme=;max-age=0;path=/";
 }} catch(e) {{}}
-location.replace("/__yao_admin_root/");
+location.replace("/__yao_admin_root/auth/connect");
 </script>
 </head><body></body></html>"#,
         locale = locale,
