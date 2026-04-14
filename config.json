@@ -1,7 +1,7 @@
 {
   "name": "Yao Agents",
   "logo": "",
-  "port": 15099,
+  "port": 0,
   "theme": {
     "primaryColor": "#3b82f6"
   },

@@ -62,7 +62,7 @@ pub struct ServerPreset {
 
 // Defaults
 fn default_name() -> String { "Yao Agents".to_string() }
-fn default_port() -> u16 { 15099 }
+fn default_port() -> u16 { 0 }
 fn default_primary_color() -> String { "#3b82f6".to_string() }
 
 impl Default for AppConf {

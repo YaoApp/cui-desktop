@@ -52,11 +52,15 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf, port: u16) -> Result<u16
         .await
         .map_err(|e| format!("Failed to bind port {}: {}", port, e))?;
 
-    info!("Proxy server started at http://127.0.0.1:{}", port);
+    let actual_port = listener.local_addr()
+        .map_err(|e| format!("Failed to get local addr: {}", e))?
+        .port();
+
+    info!("Proxy server started at http://127.0.0.1:{}", actual_port);
     {
         let mut state = config::PROXY_STATE.write();
         state.running = true;
-        state.port = port;
+        state.port = actual_port;
     }
 
     tokio::spawn(async move {
@@ -66,7 +70,7 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf, port: u16) -> Result<u16
         }
     });
 
-    Ok(port)
+    Ok(actual_port)
 }
 
 /// Route handler:
@@ -93,7 +97,11 @@ async fn handle_request(
 
     // CUI static assets -- served locally
     if path.starts_with("/__yao_admin_root/") {
-        return serve_cui_static(path, &cui_dist).await;
+        let if_none_match = req.headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        return serve_cui_static(path, &cui_dist, if_none_match.as_deref()).await;
     }
 
     // Redirect /__yao_admin_root (no trailing slash)
@@ -464,7 +472,7 @@ location.replace("/__yao_admin_root/");
 }
 
 /// Serve CUI static files from the build output directory
-async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
+async fn serve_cui_static(path: &str, cui_dist: &PathBuf, if_none_match: Option<&str>) -> Response {
     let relative = path.strip_prefix("/__yao_admin_root/").unwrap_or("");
     let relative = if relative.is_empty() { "index.html" } else { relative };
 
@@ -529,7 +537,7 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", mime)
-                .header("Cache-Control", if is_html { "no-cache" } else { "public, max-age=3600" });
+                .header("Cache-Control", if is_html { "no-store" } else { "no-cache" });
 
             // Font files: add explicit CORS headers for WebKitGTK compatibility.
             if is_font {
@@ -548,7 +556,7 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                     if modified.len() != css_str.len() {
                         info!("Stripped local() from CSS @font-face ({} bytes)", contents.len());
                     }
-                    return builder.body(Body::from(modified)).unwrap();
+                    return build_static_response(builder, modified.into_bytes(), if_none_match);
                 }
             }
 
@@ -602,7 +610,7 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf) -> Response {
                 return builder.body(Body::from(modified)).unwrap();
             }
 
-            builder.body(Body::from(contents)).unwrap()
+            build_static_response(builder, contents, if_none_match)
         }
         Err(e) => {
             warn!("Failed to read file: {:?} -> {}", file_path, e);
@@ -692,6 +700,40 @@ fn case_insensitive_lookup(base: &PathBuf, relative: &str) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// FNV-1a hash of content bytes, returned as a quoted ETag string.
+fn content_etag(data: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in data {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("\"{:016x}\"", hash)
+}
+
+/// Build a cacheable static response with ETag / 304 support.
+/// If `if_none_match` matches the computed ETag, returns 304 Not Modified.
+fn build_static_response(
+    builder: http::response::Builder,
+    data: Vec<u8>,
+    if_none_match: Option<&str>,
+) -> Response {
+    let etag = content_etag(&data);
+    if let Some(inm) = if_none_match {
+        if inm == etag || inm == "*" {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header("ETag", &etag)
+                .header("Cache-Control", "no-cache")
+                .body(Body::empty())
+                .unwrap();
+        }
+    }
+    builder
+        .header("ETag", &etag)
+        .body(Body::from(data))
+        .unwrap()
 }
 
 /// Guess MIME type from file extension
