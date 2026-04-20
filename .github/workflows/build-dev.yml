@@ -1,12 +1,7 @@
-name: Build & Release
+name: Build (Dev)
 
 on:
   workflow_dispatch:
-    inputs:
-      release:
-        description: "Create a draft release"
-        type: boolean
-        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -113,7 +108,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: cargo-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          key: cargo-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.toml') }}
           restore-keys: cargo-${{ matrix.target }}-
 
       # ── Build CUI ──
@@ -143,7 +138,6 @@ jobs:
         run: cargo tauri build --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       # ── macOS Notarization ──
 
@@ -199,40 +193,3 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
-  # ── Release (optional, manual toggle) ──
-
-  release:
-    needs: build
-    if: ${{ inputs.release }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout (for version)
-        uses: actions/checkout@v4
-
-      - name: Get version
-        id: version
-        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: List artifacts
-        run: find artifacts -type f | sort
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          draft: true
-          generate_release_notes: true
-          files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.msi
-            artifacts/**/*.exe
-            artifacts/**/*.deb
-            artifacts/**/*.AppImage

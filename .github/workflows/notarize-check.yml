@@ -1,0 +1,143 @@
+name: Notarize macOS (check)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  find-pending:
+    runs-on: ubuntu-latest
+    outputs:
+      has_pending: ${{ steps.find.outputs.has_pending }}
+    steps:
+      - name: Find pending notarization artifacts
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/actions/artifacts \
+            --paginate \
+            --jq '.artifacts[] | select(.name | startswith("notarize-pending-")) | select(.expired == false)' \
+            > /tmp/raw-artifacts.jsonl 2>/dev/null || true
+
+          if [ ! -s /tmp/raw-artifacts.jsonl ]; then
+            echo "No pending notarization artifacts found."
+            echo "has_pending=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          COUNT=$(jq -s 'length' /tmp/raw-artifacts.jsonl)
+          echo "Found $COUNT pending artifact(s)"
+          echo "has_pending=true" >> $GITHUB_OUTPUT
+
+  check-notarization:
+    needs: find-pending
+    if: needs.find-pending.outputs.has_pending == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find pending notarization artifacts
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/actions/artifacts \
+            --paginate \
+            --jq '.artifacts[] | select(.name | startswith("notarize-pending-")) | select(.expired == false)' \
+            > /tmp/raw-artifacts.jsonl 2>/dev/null || true
+          jq -s '.' /tmp/raw-artifacts.jsonl > /tmp/pending-list.json
+          COUNT=$(jq length /tmp/pending-list.json)
+          echo "Found $COUNT pending artifact(s)"
+          jq '.[].name' /tmp/pending-list.json
+
+      - name: Process pending artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAME_ID: ${{ secrets.APPLE_TEAME_ID }}
+          APPLE_APP_SPEC_PASS: ${{ secrets.APPLE_APP_SPEC_PASS }}
+        run: |
+          ARTIFACT_COUNT=$(jq length /tmp/pending-list.json)
+
+          for idx in $(seq 0 $((ARTIFACT_COUNT - 1))); do
+            ART_ID=$(jq -r ".[$idx].id" /tmp/pending-list.json)
+            ART_NAME=$(jq -r ".[$idx].name" /tmp/pending-list.json)
+
+            echo ""
+            echo "============================================"
+            echo "Processing: $ART_NAME (artifact ID: $ART_ID)"
+            echo "============================================"
+
+            WORK_DIR="/tmp/state-$ART_ID"
+            mkdir -p "$WORK_DIR"
+            if ! gh api "repos/${{ github.repository }}/actions/artifacts/$ART_ID/zip" \
+              > "$WORK_DIR/download.zip" 2>/dev/null || [ ! -s "$WORK_DIR/download.zip" ]; then
+              echo "::warning::Failed to download artifact $ART_NAME"
+              continue
+            fi
+
+            (cd "$WORK_DIR" && unzip -qo download.zip) 2>/dev/null
+            if [ ! -f "$WORK_DIR/pending.json" ]; then
+              echo "::warning::No pending.json in artifact $ART_NAME, skipping"
+              continue
+            fi
+
+            STATE="$WORK_DIR/pending.json"
+            jq . "$STATE"
+
+            ALL_DONE=true
+            SUB_COUNT=$(jq '.submissions | length' "$STATE")
+
+            for i in $(seq 0 $((SUB_COUNT - 1))); do
+              SUB_ID=$(jq -r ".submissions[$i].submission_id" "$STATE")
+              CUR_STATUS=$(jq -r ".submissions[$i].status" "$STATE")
+
+              if [ "$CUR_STATUS" != "pending" ]; then
+                echo "  [$i] $SUB_ID: already $CUR_STATUS, skipping"
+                continue
+              fi
+
+              echo "  [$i] Checking $SUB_ID ..."
+              INFO_OUT=$(xcrun notarytool info "$SUB_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAME_ID" \
+                --password "$APPLE_APP_SPEC_PASS" \
+                --output-format json 2>&1) || true
+
+              NEW_STATUS=$(echo "$INFO_OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','In Progress'))" 2>/dev/null || echo "In Progress")
+              echo "  [$i] Status: $NEW_STATUS"
+
+              if [ "$NEW_STATUS" = "Accepted" ]; then
+                TYPE=$(jq -r ".submissions[$i].type" "$STATE")
+                ARCH=$(jq -r ".submissions[$i].arch" "$STATE")
+                RUN_ID=$(jq -r '.run_id' "$STATE")
+                VERSION=$(jq -r '.version' "$STATE")
+                echo "  Triggering staple for $TYPE $ARCH ..."
+                gh workflow run notarize-staple.yml \
+                  -f run_id="$RUN_ID" \
+                  -f version="$VERSION" \
+                  -f arch="$ARCH" \
+                  -f type="$TYPE" || echo "::warning::Failed to trigger staple"
+              elif [ "$NEW_STATUS" = "Invalid" ] || [ "$NEW_STATUS" = "Rejected" ]; then
+                echo "::error::Notarization FAILED for $ART_NAME [$i] ($NEW_STATUS)"
+                xcrun notarytool log "$SUB_ID" \
+                  --apple-id "$APPLE_ID" \
+                  --team-id "$APPLE_TEAME_ID" \
+                  --password "$APPLE_APP_SPEC_PASS" 2>/dev/null || true
+              else
+                ALL_DONE=false
+              fi
+            done
+
+            if [ "$ALL_DONE" = "true" ]; then
+              echo "All submissions in $ART_NAME are resolved. Deleting pending artifact."
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ART_ID" 2>/dev/null || true
+            else
+              echo "Some submissions in $ART_NAME still pending."
+            fi
+          done

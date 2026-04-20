@@ -181,6 +181,77 @@ pub fn set_ui_language(app: AppHandle, lang: String) {
     crate::rebuild_tray(&app);
 }
 
+/// Sync theme/lang preferences to all windows (including CUI proxy pages).
+/// Called from the settings window after changing theme or language.
+/// For our own SPA windows this triggers Tauri events; for CUI pages
+/// we inject JS directly via webview.eval() since the CUI page doesn't
+/// have our event listeners.
+#[tauri::command]
+pub fn sync_preferences(app: AppHandle, theme: String, lang: String) {
+    let umi_locale = match lang.as_str() {
+        "zh" => "zh-CN",
+        _ => "en-US",
+    };
+    let locale_cookie = match lang.as_str() {
+        "zh" => "zh-cn",
+        _ => "en-us",
+    };
+    let theme_val = if theme == "dark" { "dark" } else { "" };
+
+    // Update cookie jar so future proxy requests carry the new prefs
+    config::store_cookie(&format!("__locale={}; Path=/; Max-Age=31536000", locale_cookie));
+    if theme_val.is_empty() {
+        config::store_cookie("__theme=; Path=/; Max-Age=0");
+    } else {
+        config::store_cookie(&format!("__theme={}; Path=/; Max-Age=31536000", theme_val));
+    }
+
+    // Inject JS into every window to update localStorage + reload CUI pages
+    let js = format!(
+        r#"(function(){{
+  try {{
+    localStorage.setItem("umi_locale","{umi_locale}");
+    localStorage.setItem("cui_lang","{lang}");
+    localStorage.setItem("cui_theme","{theme}");
+    if ("{theme_val}") {{
+      localStorage.setItem("__theme","{theme_val}");
+      localStorage.setItem("xgen:xgen_theme",JSON.stringify({{type:"String",value:"{theme_val}"}}));
+    }} else {{
+      localStorage.removeItem("__theme");
+      localStorage.removeItem("xgen:xgen_theme");
+    }}
+    document.documentElement.setAttribute("data-theme","{theme}");
+    // Notify SPA pages to re-render
+    window.dispatchEvent(new CustomEvent("cui:theme-sync"));
+    window.dispatchEvent(new CustomEvent("cui:lang-sync"));
+    // If this is a CUI proxy page (not our SPA), reload to apply umi changes
+    if (window.location.hostname === "127.0.0.1") {{
+      window.location.reload();
+    }}
+  }} catch(e) {{}}
+}})()"#,
+        umi_locale = umi_locale,
+        lang = lang,
+        theme = theme,
+        theme_val = theme_val,
+    );
+
+    for (label, webview) in app.webview_windows() {
+        info!("sync_preferences: injecting into window '{}'", label);
+        let _ = webview.eval(&js);
+    }
+
+    // Also sync the window chrome / title bar theme
+    let t = match theme.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    for window in app.webview_windows().values() {
+        let _ = window.set_theme(t);
+    }
+}
+
 
 /// Set user preference cookies (__locale, __theme) in the cookie jar.
 /// These are sent to the server and injected into browser on CUI page load.

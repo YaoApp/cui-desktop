@@ -395,14 +395,14 @@ html, body {
 .settings-container {
   max-width: 580px;
   margin: 0 auto;
-  padding: 40px 24px;
+  padding: 16px 24px;
 }
 
 .settings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 28px;
+  margin-bottom: 16px;
 }
 
 .settings-header h1 {

@@ -1,0 +1,150 @@
+name: Update latest.json
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.0.0)"
+        required: true
+      mark_latest:
+        description: "Also update the rolling latest.json"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-latest:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINTS: ${{ secrets.R2_ENDPOINTS }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET || 'releases' }}
+      CDN_BASE: https://get.yaoapps.com
+    steps:
+      - name: Configure AWS CLI
+        run: |
+          aws configure set default.region us-east-1
+          aws configure set default.s3.signature_version s3v4
+
+      - name: Fetch platform signatures
+        id: fetch
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          PREFIX="yaoagents/${VERSION}"
+          mkdir -p sigs
+
+          fetch_sig() {
+            local key="$1" dst="$2"
+            if aws s3 cp "s3://${R2_BUCKET}/${PREFIX}/${key}" "sigs/${dst}" \
+                  --endpoint-url "$R2_ENDPOINTS" 2>/dev/null; then
+              echo "fetched ${key}"
+            else
+              echo "::warning::missing ${key}"
+            fi
+          }
+
+          fetch_sig "yaoagents-${VERSION}-darwin-arm64.app.tar.gz.sig" "darwin-aarch64.sig"
+          fetch_sig "yaoagents-${VERSION}-darwin-amd64.app.tar.gz.sig" "darwin-x86_64.sig"
+          fetch_sig "yaoagents-${VERSION}-windows-x64-setup.nsis.zip.sig" "windows-x86_64.sig"
+
+          ls -la sigs/ || true
+
+      - name: Build latest.json
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          python3 <<PY > latest.json
+          import json, os, base64
+          version = "${VERSION}"
+          base = "${CDN_BASE}/yaoagents/${version}"
+
+          def sig(path):
+              if not os.path.exists(path):
+                  return ""
+              with open(path, "rb") as f:
+                  raw = f.read().strip()
+              try:
+                  base64.b64decode(raw)
+                  return raw.decode("utf-8", errors="replace")
+              except Exception:
+                  return base64.b64encode(raw).decode("ascii")
+
+          platforms = {}
+          mapping = {
+              "darwin-aarch64": (f"{base}/yaoagents-{version}-darwin-arm64.app.tar.gz", "sigs/darwin-aarch64.sig"),
+              "darwin-x86_64":  (f"{base}/yaoagents-{version}-darwin-amd64.app.tar.gz", "sigs/darwin-x86_64.sig"),
+              "windows-x86_64": (f"{base}/yaoagents-{version}-windows-x64-setup.nsis.zip", "sigs/windows-x86_64.sig"),
+          }
+          for key, (url, sig_path) in mapping.items():
+              signature = sig(sig_path)
+              if not signature:
+                  continue
+              platforms[key] = {
+                  "signature": signature,
+                  "url": url,
+              }
+
+          data = {
+              "version": version,
+              "notes": "",
+              "pub_date": "${RELEASED_AT}",
+              "platforms": platforms,
+          }
+          print(json.dumps(data, indent=2, ensure_ascii=False))
+          PY
+
+          cat latest.json
+
+      - name: Upload versioned latest.json
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          aws s3 cp latest.json \
+            "s3://${R2_BUCKET}/yaoagents/${VERSION}/latest.json" \
+            --endpoint-url "$R2_ENDPOINTS" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=60"
+
+      - name: Promote to rolling latest.json
+        if: ${{ github.event.inputs.mark_latest != 'false' }}
+        run: |
+          aws s3 cp latest.json \
+            "s3://${R2_BUCKET}/yaoagents/latest.json" \
+            --endpoint-url "$R2_ENDPOINTS" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=60"
+          echo "Promoted to yaoagents/latest.json"
+
+      - name: Publish GitHub Release if all artifacts present
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          TAG="v${VERSION}"
+
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+            echo "Release $TAG is not a draft (or does not exist). Skipping publish."
+            exit 0
+          fi
+
+          ASSETS=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>/dev/null || true)
+
+          HAS_MAC_ARM64=false
+          HAS_MAC_AMD64=false
+          HAS_WIN=false
+
+          echo "$ASSETS" | grep -q "darwin-arm64.dmg" && HAS_MAC_ARM64=true
+          echo "$ASSETS" | grep -q "darwin-amd64.dmg" && HAS_MAC_AMD64=true
+          echo "$ASSETS" | grep -q "windows" && HAS_WIN=true
+
+          echo "macOS arm64: $HAS_MAC_ARM64, macOS amd64: $HAS_MAC_AMD64, Windows: $HAS_WIN"
+
+          if [ "$HAS_MAC_ARM64" = "true" ] && [ "$HAS_MAC_AMD64" = "true" ] && [ "$HAS_WIN" = "true" ]; then
+            gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false
+            echo "Published release $TAG"
+          else
+            echo "Not all platform artifacts present yet, keeping as draft."
+          fi

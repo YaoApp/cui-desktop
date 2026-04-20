@@ -1,0 +1,193 @@
+name: Notarize macOS (staple)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Release macOS workflow run ID (to download original artifacts from)"
+        required: true
+      version:
+        description: "Version used in the release build (e.g. 1.0.0)"
+        required: true
+      arch:
+        description: "Architecture (arm64 or amd64)"
+        required: true
+      type:
+        description: "Artifact type to staple"
+        required: true
+        type: choice
+        options:
+          - app
+          - dmg
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  staple-desktop:
+    runs-on: macos-latest
+    steps:
+      - name: Setup Node.js
+        if: github.event.inputs.type == 'app'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cui-desktop-macos-${{ github.event.inputs.arch }}-${{ github.event.inputs.version }}
+          path: release
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Import Apple certificates
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          mkdir -p certs
+          echo "${{ secrets.APPLE_DEVELOPERIDG2CA }}" | base64 --decode > certs/DeveloperIDG2CA.cer
+          echo "${{ secrets.APPLE_DISTRIBUTION }}" | base64 --decode > certs/distribution.cer
+          echo "${{ secrets.APPLE_PRIVATE_KEY }}" | base64 --decode > certs/private_key.p12
+
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import ./certs/DeveloperIDG2CA.cer -k $KEYCHAIN_PATH -T /usr/bin/codesign
+          security import ./certs/distribution.cer -k $KEYCHAIN_PATH -T /usr/bin/codesign
+          security import ./certs/private_key.p12 -k $KEYCHAIN_PATH -P "${{ secrets.APPLE_PRIVATE_KEY_PASSWORD }}" -T /usr/bin/codesign
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          rm -rf certs
+
+      - name: Find DMG
+        run: |
+          DMG=$(find release -maxdepth 1 -name "*.dmg" | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::No DMG found in release/"
+            ls -la release/
+            exit 1
+          fi
+          echo "DMG_FILE=$DMG" >> $GITHUB_ENV
+
+      - name: Staple .app (extract from DMG, staple, rebuild DMG + updater tar.gz)
+        if: github.event.inputs.type == 'app'
+        env:
+          APPLE_SIGN: ${{ secrets.APPLE_SIGN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          IDENTITY="Developer ID Application: ${APPLE_SIGN}"
+          VERSION="${{ github.event.inputs.version }}"
+          ARCH="${{ github.event.inputs.arch }}"
+
+          mkdir -p /tmp/dmg-mount
+          hdiutil attach "$DMG_FILE" -mountpoint /tmp/dmg-mount -nobrowse -quiet
+          APP_BUNDLE=$(find /tmp/dmg-mount -maxdepth 1 -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "::error::No .app found inside DMG"
+            hdiutil detach /tmp/dmg-mount -quiet || true
+            exit 1
+          fi
+          APP_NAME=$(basename "$APP_BUNDLE" .app)
+          cp -R "$APP_BUNDLE" "/tmp/${APP_NAME}.app"
+          hdiutil detach /tmp/dmg-mount -quiet
+
+          xcrun stapler staple "/tmp/${APP_NAME}.app"
+          echo ".app stapled successfully."
+
+          rm -f "$DMG_FILE"
+          STAGING="/tmp/dmg-staging"
+          rm -rf "$STAGING" && mkdir -p "$STAGING"
+          cp -R "/tmp/${APP_NAME}.app" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" \
+            -ov -format UDZO "$DMG_FILE"
+          codesign --force --verbose --timestamp --sign "$IDENTITY" "$DMG_FILE"
+          echo "DMG rebuilt with stapled .app."
+
+          TAR_NAME="yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz"
+          TAR_PATH="release/${TAR_NAME}"
+          tar -czf "$TAR_PATH" -C /tmp "${APP_NAME}.app"
+
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npm install -g @tauri-apps/cli 2>/dev/null || true
+            npx tauri signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+              --password "" \
+              "$TAR_PATH"
+            echo "Re-signed updater artifact: ${TAR_PATH}.sig"
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY not set, skipping .sig generation"
+          fi
+
+          ls -la release/
+
+      - name: Staple DMG directly
+        if: github.event.inputs.type == 'dmg'
+        run: |
+          xcrun stapler staple "$DMG_FILE"
+          echo "DMG ${{ github.event.inputs.arch }} stapled."
+
+      - name: Upload notarized artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cui-desktop-macos-${{ github.event.inputs.arch }}-${{ github.event.inputs.version }}-notarized
+          path: release/*
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          TAG="v${VERSION}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG_FILE" --repo "${{ github.repository }}" --clobber
+            echo "Uploaded notarized DMG to release $TAG"
+          else
+            echo "::warning::Release $TAG not found, skipping."
+          fi
+
+      - name: Upload notarized artifacts to CDN
+        if: github.event.inputs.type == 'app'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINTS: ${{ secrets.R2_ENDPOINTS }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'releases' }}
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "R2 credentials not set, skipping CDN upload."
+            exit 0
+          fi
+          VERSION="${{ github.event.inputs.version }}"
+          ARCH="${{ github.event.inputs.arch }}"
+          CDN_PREFIX="s3://${R2_BUCKET}/yaoagents/${VERSION}"
+
+          aws configure set default.region us-east-1
+          aws configure set default.s3.signature_version s3v4
+
+          upload_file() {
+            local src="$1" ctype="$2"
+            [ -f "$src" ] || return 0
+            local name; name=$(basename "$src")
+            aws s3 cp "$src" "${CDN_PREFIX}/${name}" \
+              --endpoint-url "$R2_ENDPOINTS" --content-type "${ctype}"
+            echo "Uploaded: ${name}"
+          }
+
+          TAR_NAME="yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz"
+          upload_file "release/${TAR_NAME}" "application/gzip"
+          upload_file "release/${TAR_NAME}.sig" "text/plain"
+          upload_file "$DMG_FILE" "application/x-apple-diskimage"
+
+      - name: Trigger update-latest
+        if: github.event.inputs.type == 'app'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          gh workflow run update-latest.yml \
+            --repo ${{ github.repository }} \
+            -f version="${VERSION}" \
+            -f mark_latest="true"
+          echo "Triggered update-latest: version=${VERSION}"

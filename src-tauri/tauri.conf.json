@@ -18,14 +18,15 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/YaoApp/cui-desktop/releases/latest/download/latest.json"
+        "https://get.yaoapps.com/yaoagents/latest.json"
       ],
-      "pubkey": ""
+      "pubkey": "REPLACE_WITH_PUBKEY"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": {
       "../cui-dist": "cui-dist",
       "../config.json": "config.json",

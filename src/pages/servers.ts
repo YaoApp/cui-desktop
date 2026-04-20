@@ -12,9 +12,21 @@ const DEFAULT_CONF: AppConf = {
   servers: [],
 };
 
+let _serversSyncCleanup: (() => void) | null = null;
+
 /** Render the server selection page */
 export async function renderServers(): Promise<void> {
   const app = document.getElementById("app")!;
+
+  _serversSyncCleanup?.();
+  const onTheme = () => renderServers();
+  const onLang = () => renderServers();
+  window.addEventListener("cui:theme-sync", onTheme);
+  window.addEventListener("cui:lang-sync", onLang);
+  _serversSyncCleanup = () => {
+    window.removeEventListener("cui:theme-sync", onTheme);
+    window.removeEventListener("cui:lang-sync", onLang);
+  };
 
   let conf = DEFAULT_CONF;
   try {

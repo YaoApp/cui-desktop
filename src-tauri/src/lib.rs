@@ -283,6 +283,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::default().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Load developer config.json at startup
@@ -654,6 +655,7 @@ pub fn run() {
             commands::set_preference_cookies,
             commands::set_window_theme,
             commands::set_ui_language,
+            commands::sync_preferences,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to start Tauri application");
@@ -663,8 +665,9 @@ pub fn run() {
 fn build_tray_menu<R: tauri::Runtime>(app: &impl Manager<R>) -> Result<Menu<R>, Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", config::tray_label("show"), true, None::<&str>)?;
     let servers = MenuItem::with_id(app, "servers", config::tray_label("servers"), true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", config::tray_label("settings"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", config::tray_label("quit"), true, None::<&str>)?;
-    Ok(Menu::with_items(app, &[&show, &servers, &quit])?)
+    Ok(Menu::with_items(app, &[&show, &servers, &settings, &quit])?)
 }
 
 /// When the window is restored from tray, check if it's showing a stale proxy page.
@@ -739,6 +742,22 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             let _ = win.navigate("tauri://localhost".parse().unwrap());
                         }
+                    }
+                }
+                "settings" => {
+                    if let Some(win) = app.get_webview_window("settings") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    } else {
+                        let _ = WebviewWindowBuilder::new(
+                            app,
+                            "settings",
+                            WebviewUrl::App("/settings".into()),
+                        )
+                        .title(config::tray_label("settings"))
+                        .inner_size(500.0, 520.0)
+                        .resizable(true)
+                        .build();
                     }
                 }
                 "quit" => {

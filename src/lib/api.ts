@@ -84,3 +84,8 @@ export async function setUiLanguage(lang: string): Promise<void> {
   return invoke<void>("set_ui_language", { lang });
 }
 
+/** Sync theme/lang to all windows via Rust (works even when main window shows CUI) */
+export async function syncPreferences(theme: string, lang: string): Promise<void> {
+  return invoke<void>("sync_preferences", { theme, lang });
+}
+

@@ -3,6 +3,10 @@
  *
  * Priority: user override (localStorage) > system default
  * Persisted keys: "cui_lang" ("zh"|"en"), "cui_theme" ("light"|"dark")
+ *
+ * Cross-window sync: setTheme/setLang call the Rust `sync_preferences` command
+ * which uses webview.eval() to inject JS into ALL windows — including CUI proxy
+ * pages that don't have our SPA JS loaded.
  */
 
 // ===== Translations =====
@@ -44,6 +48,18 @@ const zhCN: Record<string, string> = {
   "settings.confirm_cookies": "清除所有已存储的 Cookie？你可能需要重新登录。",
   "settings.cookies_cleared": "Cookie 已清除。",
   "settings.confirm_all": "清除所有数据，包括服务器配置和 Cookie？",
+
+  "settings.appearance": "外观",
+  "settings.language": "语言",
+  "settings.theme": "主题",
+  "settings.check_update": "检查更新",
+  "settings.checking": "正在检查…",
+  "settings.up_to_date": "已是最新版本",
+  "settings.new_version": "发现新版本 v{version}",
+  "settings.downloading": "正在下载更新…",
+  "settings.restart_now": "立即重启",
+  "settings.update_error": "检查更新失败",
+  "settings.close": "关闭",
 };
 
 const enUS: Record<string, string> = {
@@ -83,6 +99,18 @@ const enUS: Record<string, string> = {
   "settings.confirm_cookies": "Clear all stored cookies? You may need to log in again.",
   "settings.cookies_cleared": "Cookies cleared.",
   "settings.confirm_all": "Clear all data including server configurations and cookies?",
+
+  "settings.appearance": "Appearance",
+  "settings.language": "Language",
+  "settings.theme": "Theme",
+  "settings.check_update": "Check for Update",
+  "settings.checking": "Checking…",
+  "settings.up_to_date": "You're up to date",
+  "settings.new_version": "New version v{version} available",
+  "settings.downloading": "Downloading update…",
+  "settings.restart_now": "Restart Now",
+  "settings.update_error": "Update check failed",
+  "settings.close": "Close",
 };
 
 const translations: Record<string, Record<string, string>> = {
@@ -102,10 +130,13 @@ export function getLang(): string {
   return sys.startsWith("zh") ? "zh" : "en";
 }
 
-/** Set language override, persist, and sync tray menu */
+/** Set language override, persist, sync tray menu, and broadcast to all windows */
 export function setLang(lang: string): void {
   localStorage.setItem(LANG_KEY, lang);
-  import("./api").then((api) => api.setUiLanguage(lang)).catch(() => {});
+  import("./api").then((api) => {
+    api.setUiLanguage(lang).catch(() => {});
+    api.syncPreferences(getTheme(), lang).catch(() => {});
+  }).catch(() => {});
 }
 
 /** Get locale string for CUI cookie (e.g. "zh-cn", "en-us") */
@@ -130,10 +161,13 @@ export function getTheme(): string {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-/** Set theme override and persist */
+/** Set theme override, persist, and broadcast to all windows */
 export function setTheme(theme: string): void {
   localStorage.setItem(THEME_KEY, theme);
   applyTheme();
+  import("./api").then((api) => {
+    api.syncPreferences(theme, getLang()).catch(() => {});
+  }).catch(() => {});
 }
 
 /** Apply theme to document (adds/removes data-theme attribute + sync title bar) */
@@ -156,3 +190,8 @@ applyTheme();
 
 // Sync initial language to Rust (tray menu)
 import("./api").then((api) => api.setUiLanguage(getLang())).catch(() => {});
+
+// Cross-window sync is handled by the Rust `sync_preferences` command.
+// It injects JS via webview.eval() into ALL windows, updating localStorage,
+// data-theme, and dispatching "cui:theme-sync" / "cui:lang-sync" events.
+// SPA pages (servers.ts, settings.ts) listen for these CustomEvents to re-render.

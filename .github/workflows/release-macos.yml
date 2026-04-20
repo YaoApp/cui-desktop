@@ -1,0 +1,297 @@
+name: Release macOS
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  build-desktop:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            rust_target: aarch64-apple-darwin
+          - arch: amd64
+            rust_target: x86_64-apple-darwin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building version: ${VERSION}"
+
+      # ── Toolchains ──
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # ── Caching ──
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-${{ matrix.rust_target }}-${{ hashFiles('src-tauri/Cargo.toml') }}
+          restore-keys: cargo-${{ matrix.rust_target }}-
+
+      # ── Build CUI ──
+
+      - name: Pull CUI source
+        run: bash scripts/pull-cui.sh
+
+      - name: Build CUI
+        run: bash scripts/build-cui.sh
+
+      # ── Build Desktop App ──
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Patch version and updater config
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          cd src-tauri
+          python3 -c "
+          import json, os
+          with open('tauri.conf.json') as f:
+              conf = json.load(f)
+          conf['version'] = '${VERSION}'
+          conf['bundle']['targets'] = ['app']
+          conf['bundle']['createUpdaterArtifacts'] = True
+          pubkey = os.environ.get('TAURI_UPDATER_PUBKEY', '')
+          if pubkey:
+              conf.setdefault('plugins', {}).setdefault('updater', {})
+              conf['plugins']['updater']['pubkey'] = pubkey
+              conf['plugins']['updater']['endpoints'] = ['https://get.yaoapps.com/yaoagents/latest.json']
+          with open('tauri.conf.json', 'w') as f:
+              json.dump(conf, f, indent=2)
+              f.write('\n')
+          "
+          sed -i '' 's/^version = \".*\"/version = \"${VERSION}\"/' Cargo.toml
+          cd ..
+          echo "Patched to version ${VERSION}"
+
+      # ── Apple Code Signing ──
+
+      - name: Import Apple certificates
+        env:
+          APPLE_DEVELOPERIDG2CA: ${{ secrets.APPLE_DEVELOPERIDG2CA }}
+          APPLE_DISTRIBUTION: ${{ secrets.APPLE_DISTRIBUTION }}
+          APPLE_PRIVATE_KEY: ${{ secrets.APPLE_PRIVATE_KEY }}
+          APPLE_PRIVATE_KEY_PASSWORD: ${{ secrets.APPLE_PRIVATE_KEY_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          mkdir -p certs
+          echo "$APPLE_DEVELOPERIDG2CA" | base64 --decode > certs/DeveloperIDG2CA.cer
+          echo "$APPLE_DISTRIBUTION" | base64 --decode > certs/distribution.cer
+          echo "$APPLE_PRIVATE_KEY" | base64 --decode > certs/private_key.p12
+
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import ./certs/DeveloperIDG2CA.cer -k $KEYCHAIN_PATH -T /usr/bin/codesign
+          security import ./certs/distribution.cer -k $KEYCHAIN_PATH -T /usr/bin/codesign
+          security import ./certs/private_key.p12 -k $KEYCHAIN_PATH -P "$APPLE_PRIVATE_KEY_PASSWORD" -T /usr/bin/codesign
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          rm -rf certs
+
+      - name: Build Tauri app
+        run: cargo tauri build --target ${{ matrix.rust_target }}
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: ${{ secrets.APPLE_SIGN }}"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_PRIVATE_KEY }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      - name: Sign .app bundle
+        env:
+          APPLE_SIGN: ${{ secrets.APPLE_SIGN }}
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          IDENTITY="Developer ID Application: ${APPLE_SIGN}"
+          APP_BUNDLE=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "::error::No .app bundle found"
+            exit 1
+          fi
+          codesign --deep --force --verbose --timestamp --options runtime \
+            --sign "$IDENTITY" "$APP_BUNDLE"
+          codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+      - name: Rebuild DMG with Applications symlink
+        env:
+          APPLE_SIGN: ${{ secrets.APPLE_SIGN }}
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          IDENTITY="Developer ID Application: ${APPLE_SIGN}"
+          APP_BUNDLE=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1)
+          APP_NAME=$(basename "$APP_BUNDLE" .app)
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+
+          OLD_DMG=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)
+          [ -n "$OLD_DMG" ] && rm -f "$OLD_DMG"
+
+          DMG_PATH="${BUNDLE_DIR}/dmg/yaoagents-${VERSION}-darwin-${ARCH}.dmg"
+          mkdir -p "$(dirname "$DMG_PATH")"
+
+          STAGING="/tmp/dmg-staging"
+          rm -rf "$STAGING" && mkdir -p "$STAGING"
+          touch "$STAGING/.metadata_never_index"
+          cp -R "$APP_BUNDLE" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+
+          sleep 2
+          hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" \
+            -ov -format UDZO "$DMG_PATH"
+          codesign --force --verbose --timestamp --sign "$IDENTITY" "$DMG_PATH"
+          codesign --verify --verbose=2 "$DMG_PATH"
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          mkdir -p release
+
+          DMG_FILE=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)
+          [ -n "$DMG_FILE" ] && cp "$DMG_FILE" "release/yaoagents-${VERSION}-darwin-${ARCH}.dmg"
+
+          TAR_FILE=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz" 2>/dev/null | head -1)
+          SIG_FILE=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
+          [ -n "$TAR_FILE" ] && cp "$TAR_FILE" "release/yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz"
+          [ -n "$SIG_FILE" ] && cp "$SIG_FILE" "release/yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz.sig"
+
+          ls -la release/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cui-desktop-macos-${{ matrix.arch }}-${{ steps.version.outputs.version }}
+          path: release/*
+
+      - name: Upload to CDN
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINTS: ${{ secrets.R2_ENDPOINTS }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'releases' }}
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "R2 credentials not set, skipping CDN upload."
+            exit 0
+          fi
+          aws configure set default.region us-east-1
+          aws configure set default.s3.signature_version s3v4
+
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          CDN_PREFIX="s3://${R2_BUCKET}/yaoagents/${VERSION}"
+
+          upload_file() {
+            local src="$1" ctype="$2"
+            [ -f "$src" ] || return 0
+            local name; name=$(basename "$src")
+            aws s3 cp "$src" "${CDN_PREFIX}/${name}" \
+              --endpoint-url "$R2_ENDPOINTS" --content-type "${ctype}"
+            echo "Uploaded: ${name}"
+          }
+
+          upload_file "release/yaoagents-${VERSION}-darwin-${ARCH}.dmg" "application/x-apple-diskimage"
+          upload_file "release/yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz" "application/gzip"
+          upload_file "release/yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz.sig" "text/plain"
+
+  # ===================================================================
+  # Upload to unified GitHub Release
+  # ===================================================================
+  release:
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cui-desktop-macos-arm64-${{ inputs.version }}
+          path: release
+
+      - name: Download amd64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cui-desktop-macos-amd64-${{ inputs.version }}
+          path: release
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          ls -la release/
+          gh release upload "$TAG" release/* --repo ${{ github.repository }} --clobber
+          echo "Uploaded macOS artifacts to release $TAG"
+
+  # ===================================================================
+  # Trigger notarization
+  # ===================================================================
+  notarize:
+    needs: build-desktop
+    if: always() && needs.build-desktop.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger notarize-submit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          gh workflow run notarize-submit.yml \
+            --repo ${{ github.repository }} \
+            -f run_id="${{ github.run_id }}" \
+            -f version="${VERSION}" \
+            -f targets="all"
+          echo "Triggered notarize-submit: run_id=${{ github.run_id }}, version=${VERSION}"

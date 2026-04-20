@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0). Leave empty to derive from tag."
+        required: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Checkout (for release notes)
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            echo "::error::No version provided and no v* tag found"
+            exit 1
+          fi
+
+      - name: Pre-create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping creation"
+          else
+            gh release create "$TAG" --draft --title "v${VERSION}" --generate-notes
+            echo "Created draft release $TAG"
+          fi
+
+  release-macos:
+    needs: resolve
+    uses: ./.github/workflows/release-macos.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit
+
+  release-windows:
+    needs: resolve
+    uses: ./.github/workflows/release-windows.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit

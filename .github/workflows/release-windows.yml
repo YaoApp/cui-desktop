@@ -1,0 +1,212 @@
+name: Release Windows
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  build-desktop:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building version: ${VERSION}"
+
+      # ── Toolchains ──
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # ── Caching ──
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-windows-${{ hashFiles('src-tauri/Cargo.toml') }}
+          restore-keys: cargo-windows-
+
+      # ── Build CUI ──
+
+      - name: Pull CUI source
+        shell: bash
+        run: bash scripts/pull-cui.sh
+
+      - name: Build CUI
+        shell: bash
+        run: bash scripts/build-cui.sh
+
+      # ── Build Desktop App ──
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Patch version and updater config
+        shell: bash
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          cd src-tauri
+          python3 -c "
+          import json, os
+          with open('tauri.conf.json') as f:
+              conf = json.load(f)
+          conf['version'] = '${VERSION}'
+          conf['bundle']['targets'] = ['msi', 'nsis']
+          conf['bundle']['createUpdaterArtifacts'] = True
+          pubkey = os.environ.get('TAURI_UPDATER_PUBKEY', '')
+          if pubkey:
+              conf.setdefault('plugins', {}).setdefault('updater', {})
+              conf['plugins']['updater']['pubkey'] = pubkey
+              conf['plugins']['updater']['endpoints'] = ['https://get.yaoapps.com/yaoagents/latest.json']
+          with open('tauri.conf.json', 'w') as f:
+              json.dump(conf, f, indent=2)
+              f.write('\n')
+          "
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          cd ..
+          echo "Patched to version ${VERSION}"
+
+      - name: Build Tauri app
+        run: cargo tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          mkdir -p release
+
+          MSI_FILE=$(find "$BUNDLE_DIR/msi" -name "*.msi" 2>/dev/null | head -1)
+          [ -n "$MSI_FILE" ] && cp "$MSI_FILE" "release/yaoagents-${VERSION}-windows.msi"
+
+          NSIS_ZIP=$(find "$BUNDLE_DIR/nsis" -name "*.nsis.zip" 2>/dev/null | head -1)
+          NSIS_SIG=$(find "$BUNDLE_DIR/nsis" -name "*.nsis.zip.sig" 2>/dev/null | head -1)
+          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
+          [ -n "$NSIS_ZIP" ] && cp "$NSIS_ZIP" "release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip"
+          [ -n "$NSIS_SIG" ] && cp "$NSIS_SIG" "release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip.sig"
+          [ -n "$NSIS_EXE" ] && cp "$NSIS_EXE" "release/yaoagents-${VERSION}-windows-x64-setup.exe"
+
+          ls -la release/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cui-desktop-windows-${{ steps.version.outputs.version }}
+          path: release/*
+
+      - name: Upload to CDN
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINTS: ${{ secrets.R2_ENDPOINTS }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'releases' }}
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "R2 credentials not set, skipping CDN upload."
+            exit 0
+          fi
+          aws configure set default.region us-east-1
+          aws configure set default.s3.signature_version s3v4
+
+          VERSION="${{ steps.version.outputs.version }}"
+          CDN_PREFIX="s3://${R2_BUCKET}/yaoagents/${VERSION}"
+
+          upload_file() {
+            local src="$1" ctype="$2"
+            [ -f "$src" ] || return 0
+            local name; name=$(basename "$src")
+            aws s3 cp "$src" "${CDN_PREFIX}/${name}" \
+              --endpoint-url "$R2_ENDPOINTS" --content-type "${ctype}"
+            echo "Uploaded: ${name}"
+          }
+
+          upload_file "release/yaoagents-${VERSION}-windows.msi" "application/x-msi"
+          upload_file "release/yaoagents-${VERSION}-windows-x64-setup.exe" "application/vnd.microsoft.portable-executable"
+          upload_file "release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip" "application/zip"
+          upload_file "release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip.sig" "text/plain"
+
+  # ===================================================================
+  # Upload to unified GitHub Release
+  # ===================================================================
+  release:
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cui-desktop-windows-${{ inputs.version }}
+          path: release
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          ls -la release/
+          gh release upload "$TAG" release/* --repo ${{ github.repository }} --clobber
+          echo "Uploaded Windows artifacts to release $TAG"
+
+  # ===================================================================
+  # Trigger update-latest to publish latest.json
+  # ===================================================================
+  publish-latest:
+    needs: build-desktop
+    if: always() && needs.build-desktop.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger update-latest workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run update-latest.yml \
+            --repo ${{ github.repository }} \
+            -f version="${{ inputs.version }}" \
+            -f mark_latest="true"
+          echo "Triggered update-latest: version=${{ inputs.version }}"

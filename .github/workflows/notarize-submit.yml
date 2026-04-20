@@ -1,0 +1,167 @@
+name: Notarize macOS (submit)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Release macOS workflow run ID (to download artifacts from)"
+        required: true
+      version:
+        description: "Version (e.g. 1.0.0)"
+        required: true
+      targets:
+        description: "What to notarize"
+        required: true
+        type: choice
+        options:
+          - all
+          - dmg-only
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "version=$INPUT_VERSION" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          RUN_ID="${{ github.event.inputs.run_id }}"
+          VERSION=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" \
+            --jq '.inputs.version // empty' 2>/dev/null || true)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+              --jq '[.artifacts[].name | select(startswith("cui-desktop-macos-arm64-"))] | first | sub("cui-desktop-macos-arm64-"; "")' 2>/dev/null || true)
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "::error::Cannot resolve version from run $RUN_ID"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+  submit-desktop:
+    needs: resolve-version
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cui-desktop-macos-${{ matrix.arch }}-${{ needs.resolve-version.outputs.version }}
+          path: release
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract .app from DMG
+        run: |
+          DMG=$(find release -maxdepth 1 -name "*.dmg" | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::No DMG found in release/"
+            ls -la release/
+            exit 1
+          fi
+          echo "DMG_FILE=$DMG" >> $GITHUB_ENV
+
+          mkdir -p /tmp/dmg-mount
+          hdiutil attach "$DMG" -mountpoint /tmp/dmg-mount -nobrowse -quiet
+          APP_BUNDLE=$(find /tmp/dmg-mount -maxdepth 1 -name "*.app" -type d | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "::error::No .app found inside DMG"
+            hdiutil detach /tmp/dmg-mount -quiet || true
+            exit 1
+          fi
+          cp -R "$APP_BUNDLE" /tmp/extracted.app
+          hdiutil detach /tmp/dmg-mount -quiet
+
+      - name: Submit .app to notary service
+        if: github.event.inputs.targets == 'all'
+        id: submit_app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAME_ID: ${{ secrets.APPLE_TEAME_ID }}
+          APPLE_APP_SPEC_PASS: ${{ secrets.APPLE_APP_SPEC_PASS }}
+        run: |
+          zip -r /tmp/app-for-notarize.zip /tmp/extracted.app
+          SUBMIT_OUT=$(xcrun notarytool submit /tmp/app-for-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAME_ID" \
+            --password "$APPLE_APP_SPEC_PASS" \
+            --output-format json 2>&1) || true
+          echo "$SUBMIT_OUT"
+          rm -f /tmp/app-for-notarize.zip
+
+          SUB_ID=$(echo "$SUBMIT_OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -z "$SUB_ID" ]; then
+            echo "::error::Failed to submit .app ${{ matrix.arch }}"
+            exit 1
+          fi
+          echo "submission_id=$SUB_ID" >> $GITHUB_OUTPUT
+
+      - name: Submit DMG to notary service
+        id: submit_dmg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAME_ID: ${{ secrets.APPLE_TEAME_ID }}
+          APPLE_APP_SPEC_PASS: ${{ secrets.APPLE_APP_SPEC_PASS }}
+        run: |
+          SUBMIT_OUT=$(xcrun notarytool submit "$DMG_FILE" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAME_ID" \
+            --password "$APPLE_APP_SPEC_PASS" \
+            --output-format json 2>&1) || true
+          echo "$SUBMIT_OUT"
+
+          SUB_ID=$(echo "$SUBMIT_OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -z "$SUB_ID" ]; then
+            echo "::error::Failed to submit DMG ${{ matrix.arch }}"
+            exit 1
+          fi
+          echo "submission_id=$SUB_ID" >> $GITHUB_OUTPUT
+
+      - name: Write state file
+        env:
+          APP_SUB_ID: ${{ steps.submit_app.outputs.submission_id }}
+          DMG_SUB_ID: ${{ steps.submit_dmg.outputs.submission_id }}
+          RUN_ID: ${{ github.event.inputs.run_id }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p state
+          python3 << 'PYEOF'
+          import json, os
+          submissions = []
+          app_id = os.environ.get("APP_SUB_ID", "")
+          dmg_id = os.environ.get("DMG_SUB_ID", "")
+          arch = os.environ["ARCH"]
+          if app_id:
+              submissions.append({"type": "app", "arch": arch, "submission_id": app_id, "status": "pending"})
+          if dmg_id:
+              submissions.append({"type": "dmg", "arch": arch, "submission_id": dmg_id, "status": "pending"})
+          state = {
+              "run_id": os.environ["RUN_ID"],
+              "version": os.environ["VERSION"],
+              "submissions": submissions
+          }
+          with open("state/pending.json", "w") as f:
+              json.dump(state, f, indent=2)
+          PYEOF
+
+      - name: Upload pending state
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarize-pending-desktop-${{ matrix.arch }}
+          path: state/pending.json

@@ -367,10 +367,12 @@ pub fn tray_label(key: &str) -> String {
     match (key, lang.as_str()) {
         ("show", "zh") => "显示窗口".into(),
         ("servers", "zh") => "切换服务器".into(),
+        ("settings", "zh") => "设置".into(),
         ("quit", "zh") => "退出".into(),
         ("switch_confirm", "zh") => "切换服务器将退出当前登录，是否继续？".into(),
         ("show", _) => "Show Window".into(),
         ("servers", _) => "Switch Server".into(),
+        ("settings", _) => "Settings".into(),
         ("quit", _) => "Quit".into(),
         ("switch_confirm", _) => "Switching server will end your current session. Continue?".into(),
         _ => key.into(),
