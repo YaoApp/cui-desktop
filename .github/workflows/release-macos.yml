@@ -111,7 +111,7 @@ jobs:
               json.dump(conf, f, indent=2)
               f.write('\n')
           "
-          sed -i '' 's/^version = \".*\"/version = \"${VERSION}\"/' Cargo.toml
+          sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
           cd ..
           echo "Patched to version ${VERSION}"
 
