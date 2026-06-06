@@ -60,7 +60,7 @@ jobs:
           python3 <<PY > latest.json
           import json, os, base64
           version = "${VERSION}"
-          base = "${CDN_BASE}/yaoagents/${version}"
+          base = "${CDN_BASE}/yaoagents/${VERSION}"
 
           def sig(path):
               if not os.path.exists(path):

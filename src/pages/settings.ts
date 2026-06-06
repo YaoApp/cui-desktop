@@ -3,6 +3,7 @@ import { clearAll } from "../lib/store";
 import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
@@ -150,7 +151,10 @@ export async function renderSettings(): Promise<void> {
         await update.downloadAndInstall();
         btn.textContent = t("settings.restart_now");
         btn.disabled = false;
-        btn.onclick = async () => { await relaunch(); };
+        btn.onclick = async () => {
+          try { await getCurrentWebview().clearAllBrowsingData(); } catch { /* ignore */ }
+          await relaunch();
+        };
       } else {
         statusEl.textContent = t("settings.up_to_date");
         btn.disabled = false;

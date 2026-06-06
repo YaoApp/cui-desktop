@@ -10,6 +10,7 @@
     "core:window:allow-set-title",
     "core:window:allow-close",
     "core:webview:default",
+    "core:webview:allow-clear-all-browsing-data",
     "store:default",
     "updater:default",
     "process:default"
