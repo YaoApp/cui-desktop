@@ -2,6 +2,7 @@ mod app_conf;
 mod commands;
 mod config;
 mod proxy;
+mod tunnel;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -264,6 +265,85 @@ fn is_external_url(url: &str) -> bool {
     false
 }
 
+/// Detect sandbox service port URLs that should open in the system browser.
+/// Case 1: 127.0.0.1/localhost + port != proxy_port (CUI uses location.hostname)
+/// Case 2: remote_host + port != main_port (direct remote address)
+fn should_open_in_browser(url: &str) -> bool {
+    let parsed = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let state = config::get_proxy_state();
+    if state.server_url.is_empty() {
+        return false;
+    }
+    let host = parsed.host_str().unwrap_or("");
+    let port = parsed.port();
+
+    // Case 1: localhost with non-proxy port
+    if host == "127.0.0.1" || host == "localhost" {
+        if let Some(p) = port {
+            return p != state.port;
+        }
+    }
+
+    // Case 2: same remote host, different port
+    if let Ok(server) = url::Url::parse(&state.server_url) {
+        if parsed.host() == server.host() && port != server.port() {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Build a token auto-login URL for the system browser.
+/// Translates 127.0.0.1:port → remote_host:port and wraps in /auth/token redirect.
+fn build_token_login_url(target_url: &str) -> String {
+    let state = config::get_proxy_state();
+    let parsed = match url::Url::parse(target_url) {
+        Ok(u) => u,
+        Err(_) => return target_url.to_string(),
+    };
+    let server = match url::Url::parse(&state.server_url) {
+        Ok(s) => s,
+        Err(_) => return target_url.to_string(),
+    };
+
+    // Reconstruct actual remote URL (127.0.0.1:15123 → 192.168.3.216:15123)
+    let remote_host = server.host_str().unwrap_or("");
+    let target_port = parsed.port().unwrap_or(80);
+    let scheme = server.scheme();
+    let path = parsed.path();
+    let query = parsed.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let actual_target = format!("{}://{}:{}{}{}", scheme, remote_host, target_port, path, query);
+
+    // No token available — fallback to direct remote URL
+    if state.token.is_empty() {
+        return actual_target;
+    }
+
+    use base64::Engine;
+    let encoded_token = base64::engine::general_purpose::STANDARD.encode(&state.token);
+    let server_base = state.server_url.trim_end_matches('/');
+
+    // URL-encode using the url crate's form_urlencoded
+    let encoded_token_param: String = url::form_urlencoded::byte_serialize(encoded_token.as_bytes()).collect();
+    let encoded_redirect: String = url::form_urlencoded::byte_serialize(actual_target.as_bytes()).collect();
+
+    format!(
+        "{}{}/auth/token?token={}&redirect={}",
+        server_base,
+        &state.dashboard,
+        encoded_token_param,
+        encoded_redirect
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -376,6 +456,13 @@ pub fn run() {
                             return;
                         }
 
+                        if should_open_in_browser(&final_url) {
+                            let auth_url = build_token_login_url(&final_url);
+                            info!("Opening sandbox in browser: {} -> {}", final_url, auth_url);
+                            open_in_system_browser(&auth_url);
+                            return;
+                        }
+
                         if is_external_url(&final_url) {
                             info!("Opening in system browser: {}", final_url);
                             open_in_system_browser(&final_url);
@@ -430,6 +517,13 @@ pub fn run() {
 
                                 if is_file_download_url(&popup_url) {
                                     spawn_file_download(h, popup_url);
+                                    return;
+                                }
+
+                                if should_open_in_browser(&popup_url) {
+                                    let auth_url = build_token_login_url(&popup_url);
+                                    info!("Opening sandbox in browser: {} -> {}", popup_url, auth_url);
+                                    open_in_system_browser(&auth_url);
                                     return;
                                 }
 

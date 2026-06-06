@@ -34,6 +34,9 @@ pub async fn start_proxy_server(cui_dist_path: PathBuf, port: u16) -> Result<u16
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+    // Initialize the global TunnelManager with a shared client
+    config::init_tunnel_manager(client.clone());
+
     let cui_dist = cui_dist_path.clone();
 
     let app = Router::new()
@@ -354,11 +357,72 @@ async fn handle_desktop_api(req: Request) -> Response {
     match path {
         "/__yao_desktop/window/fullscreen" => handle_window_fullscreen(req).await,
         "/__yao_desktop/reveal" => handle_reveal_file(req).await,
+        "/__yao_desktop/tunnel" => handle_tunnel_create(req).await,
         _ => Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header("Content-Type", "application/json")
             .body(Body::from(r#"{"error":"not found"}"#))
             .unwrap(),
+    }
+}
+
+/// Create or retrieve a tunnel for a remote port.
+/// POST /__yao_desktop/tunnel  body: {"port": 15123}  → {"local_port": 18001}
+async fn handle_tunnel_create(req: Request) -> Response {
+    if req.method() != http::Method::POST {
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    let body = axum::body::to_bytes(req.into_body(), 4096)
+        .await
+        .unwrap_or_default();
+
+    let port: u16 = match serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("port")?.as_u64())
+    {
+        Some(p) if p >= 1 && p <= 65535 => p as u16,
+        _ => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"error":"invalid port (must be 1-65535)"}"#))
+                .unwrap();
+        }
+    };
+
+    let manager = match config::get_tunnel_manager() {
+        Some(m) => m,
+        None => {
+            return Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"error":"tunnel manager not initialized"}"#))
+                .unwrap();
+        }
+    };
+
+    match manager.get_or_create(port).await {
+        Ok(local_port) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(r#"{{"local_port":{}}}"#, local_port)))
+            .unwrap(),
+        Err(e) => {
+            let status = if e.contains("limit reached") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Response::builder()
+                .status(status)
+                .header("Content-Type", "application/json")
+                .body(Body::from(format!(r#"{{"error":"{}"}}"#, e)))
+                .unwrap()
+        }
     }
 }
 
@@ -661,16 +725,42 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf, if_none_match: Option<
                     theme = theme_value,
                 );
 
+                // Tunnel iframe rewrite script: intercepts iframes pointing to
+                // sandbox service ports and rewrites them through local tunnels.
+                let tunnel_script = {
+                    let state = get_proxy_state();
+                    let proxy_port = state.port;
+                    let (remote_host, main_port) = if let Ok(u) = url::Url::parse(&state.server_url) {
+                        (
+                            u.host_str().unwrap_or("").to_string(),
+                            u.port().unwrap_or(if u.scheme() == "https" { 443 } else { 80 }),
+                        )
+                    } else {
+                        (String::new(), 0)
+                    };
+
+                    if !remote_host.is_empty() {
+                        let js = include_str!("tunnel_inject.js")
+                            .replace("__PROXY_PORT__", &proxy_port.to_string())
+                            .replace("__REMOTE_HOST__", &remote_host)
+                            .replace("__MAIN_PORT__", &main_port.to_string());
+                        format!("<script>{}</script>", js)
+                    } else {
+                        String::new()
+                    }
+                };
+
+                let full_inject = format!("{}{}", inject_script, tunnel_script);
                 let html = String::from_utf8_lossy(&contents);
                 let modified = if let Some(head_start) = html.find("<head") {
                     if let Some(gt) = html[head_start..].find('>') {
                         let insert_pos = head_start + gt + 1;
-                        format!("{}{}{}", &html[..insert_pos], inject_script, &html[insert_pos..])
+                        format!("{}{}{}", &html[..insert_pos], full_inject, &html[insert_pos..])
                     } else {
-                        format!("{}{}", html, inject_script)
+                        format!("{}{}", html, full_inject)
                     }
                 } else {
-                    format!("{}{}", inject_script, html)
+                    format!("{}{}", full_inject, html)
                 };
                 return builder.body(Body::from(modified)).unwrap();
             }

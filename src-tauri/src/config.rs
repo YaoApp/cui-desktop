@@ -77,6 +77,20 @@ pub fn get_proxy_state() -> ProxyState {
     PROXY_STATE.read().clone()
 }
 
+// ========== Tunnel Manager ==========
+
+use crate::tunnel::TunnelManager;
+
+static TUNNEL_MANAGER: OnceLock<TunnelManager> = OnceLock::new();
+
+pub fn init_tunnel_manager(client: reqwest::Client) {
+    let _ = TUNNEL_MANAGER.set(TunnelManager::new(client));
+}
+
+pub fn get_tunnel_manager() -> Option<&'static TunnelManager> {
+    TUNNEL_MANAGER.get()
+}
+
 // ========== Cookie Jar ==========
 
 /// A single cookie entry
