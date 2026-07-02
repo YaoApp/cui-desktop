@@ -13,6 +13,7 @@ dist/
 
 # CUI source (cloned from GitHub, not our code)
 cui/
+cui
 
 # CUI build output (generated from CUI source)
 cui-dist/
