@@ -160,7 +160,7 @@ jobs:
           import zipfile, os, sys
           exe = sys.argv[1]
           out = sys.argv[2]
-          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
               z.write(exe, os.path.basename(exe))
           print(f'Created: {out} ({os.path.getsize(out)} bytes)')
           " "$NSIS_EXE" "$BUNDLE_DIR/nsis/${ZIP_NAME}"
