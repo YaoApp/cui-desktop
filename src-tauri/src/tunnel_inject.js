@@ -2,6 +2,7 @@
 var PROXY_PORT=__PROXY_PORT__;
 var REMOTE_HOST="__REMOTE_HOST__";
 var MAIN_PORT=__MAIN_PORT__;
+var WEBPROXY_DOMAIN="__WEBPROXY_DOMAIN__";
 
 function needsTunnel(src){
 try{
@@ -10,6 +11,11 @@ var h=u.hostname;
 var p=parseInt(u.port)||(u.protocol==="https:"?443:80);
 if(h===REMOTE_HOST&&p!==MAIN_PORT)return p;
 if((h==="127.0.0.1"||h==="localhost")&&p!==PROXY_PORT)return p;
+if(WEBPROXY_DOMAIN&&h.endsWith("."+WEBPROXY_DOMAIN)){
+var sub=h.slice(0,-(WEBPROXY_DOMAIN.length+1));
+var m=sub.match(/(\d+)/);
+if(m){var dp=parseInt(m[1]);if(dp>0&&dp<=65535)return dp;}
+}
 return 0;
 }catch(e){return 0;}
 }

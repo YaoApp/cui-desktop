@@ -60,6 +60,19 @@ const zhCN: Record<string, string> = {
   "settings.restart_now": "立即重启",
   "settings.update_error": "检查更新失败",
   "settings.close": "关闭",
+
+  "updater.title": "软件更新",
+  "updater.current_version": "当前版本",
+  "updater.new_version": "新版本",
+  "updater.release_notes": "更新说明",
+  "updater.download_install": "下载并安装",
+  "updater.downloading": "正在下载…",
+  "updater.installing": "正在安装…",
+  "updater.restart_now": "立即重启",
+  "updater.up_to_date": "已是最新版本",
+  "updater.check_failed": "检查更新失败",
+  "updater.close": "关闭",
+  "updater.checking": "正在检查更新…",
 };
 
 const enUS: Record<string, string> = {
@@ -111,6 +124,19 @@ const enUS: Record<string, string> = {
   "settings.restart_now": "Restart Now",
   "settings.update_error": "Update check failed",
   "settings.close": "Close",
+
+  "updater.title": "Software Update",
+  "updater.current_version": "Current Version",
+  "updater.new_version": "New Version",
+  "updater.release_notes": "Release Notes",
+  "updater.download_install": "Download & Install",
+  "updater.downloading": "Downloading…",
+  "updater.installing": "Installing…",
+  "updater.restart_now": "Restart Now",
+  "updater.up_to_date": "You're up to date",
+  "updater.check_failed": "Update check failed",
+  "updater.close": "Close",
+  "updater.checking": "Checking for updates…",
 };
 
 const translations: Record<string, Record<string, string>> = {

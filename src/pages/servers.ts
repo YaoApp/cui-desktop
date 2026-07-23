@@ -2,6 +2,7 @@ import { getAppConf, checkServer, startProxy, type AppConf } from "../lib/api";
 import { getSettings, saveServer, removeServer, type ServerEntry } from "../lib/store";
 import { navigate } from "../lib/router";
 import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
+import { normalizeServerUrl } from "../lib/url";
 
 const DEFAULT_CONF: AppConf = {
   name: "Yao Agents",
@@ -160,11 +161,23 @@ function bind(conf: AppConf) {
   });
 
   document.getElementById("add-ok")!.addEventListener("click", async () => {
-    const url = (document.getElementById("add-url") as HTMLInputElement).value.trim();
-    if (!url) { showAlert(alertArea, "error", t("app.enter_url")); return; }
+    const raw = (document.getElementById("add-url") as HTMLInputElement).value.trim();
+    if (!raw) { showAlert(alertArea, "error", t("app.enter_url")); return; }
+    const url = normalizeServerUrl(raw);
     const label = (document.getElementById("add-label") as HTMLInputElement).value.trim() || url.replace(/^https?:\/\//, "");
     await saveServer({ url, label, lastConnected: 0 });
     renderServers();
+  });
+
+  // Auto-correct URL on blur (only when input looks like a URL)
+  document.getElementById("add-url")!.addEventListener("blur", (e) => {
+    const input = e.target as HTMLInputElement;
+    const val = input.value.trim();
+    if (!val || (!val.includes(".") && !val.includes(":"))) return;
+    const normalized = normalizeServerUrl(val);
+    if (normalized && normalized !== val) {
+      input.value = normalized;
+    }
   });
 
   // Settings
@@ -186,23 +199,26 @@ function bind(conf: AppConf) {
   });
 }
 
-async function doConnect(url: string, label: string, alertArea: HTMLElement) {
+async function doConnect(rawUrl: string, label: string, alertArea: HTMLElement) {
+  const url = normalizeServerUrl(rawUrl) || rawUrl;
   document.querySelectorAll(".connect-btn").forEach(b => (b as HTMLButtonElement).disabled = true);
   showAlert(alertArea, "info", t("app.connecting"));
 
   try {
     let name = label || url.replace(/^https?:\/\//, "");
     let dashboard = "";
+    let webproxyDomain = "";
     try {
       const info = await checkServer(url);
       if (info.name) name = info.name;
       if (info.dashboard) dashboard = info.dashboard;
+      if (info.webproxy?.domain) webproxyDomain = info.webproxy.domain;
     } catch { /* older server */ }
 
     await saveServer({ url, label: name, lastConnected: Date.now() });
 
     showAlert(alertArea, "info", t("app.starting_proxy"));
-    await startProxy(url, "", "openapi", dashboard);
+    await startProxy(url, "", "openapi", dashboard, webproxyDomain);
 
     showAlert(alertArea, "success", t("app.connected"));
     setTimeout(() => navigate("/app"), 300);

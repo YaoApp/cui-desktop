@@ -24,6 +24,14 @@ pub struct WellKnownInfo {
     pub openapi: Option<String>,
     pub dashboard: Option<String>,
     pub issuer_url: Option<String>,
+    pub webproxy: Option<WebProxyInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WebProxyInfo {
+    pub domain: Option<String>,
+    pub prefix: Option<String>,
+    pub protocol: Option<String>,
 }
 
 /// Resolve the CUI build output directory
@@ -101,6 +109,7 @@ pub async fn start_proxy(
     token: String,
     auth_mode: String,
     dashboard: String,
+    webproxy_domain: String,
 ) -> Result<u16, String> {
     let state = config::get_proxy_state();
     if state.running {
@@ -111,12 +120,12 @@ pub async fn start_proxy(
         }
         let effective_token = if token.is_empty() && !server_changed { &state.token } else { &token };
         let effective_auth = if auth_mode.is_empty() && !server_changed { &state.auth_mode } else { &auth_mode };
-        config::update_proxy_state(&server_url, effective_token, effective_auth, &dashboard);
+        config::update_proxy_state(&server_url, effective_token, effective_auth, &dashboard, &webproxy_domain);
         info!("Proxy config updated (server={}, dashboard={})", server_url, dashboard);
         return Ok(state.port);
     }
 
-    config::update_proxy_state(&server_url, &token, &auth_mode, &dashboard);
+    config::update_proxy_state(&server_url, &token, &auth_mode, &dashboard, &webproxy_domain);
 
     // Set up cookie jar
     if let Ok(app_data) = app.path().app_data_dir() {
@@ -146,7 +155,7 @@ pub async fn get_proxy_status() -> ProxyState {
 #[tauri::command]
 pub async fn update_proxy_token(token: String) -> Result<(), String> {
     let state = config::get_proxy_state();
-    config::update_proxy_state(&state.server_url, &token, &state.auth_mode, &state.dashboard);
+    config::update_proxy_state(&state.server_url, &token, &state.auth_mode, &state.dashboard, &state.webproxy_domain);
     Ok(())
 }
 
@@ -267,5 +276,12 @@ pub async fn set_preference_cookies(locale: String, theme: String) -> Result<(),
         config::store_cookie("__theme=; Path=/; Max-Age=0");
     }
     info!("Preference cookies set: locale={}, theme={}", locale, theme);
+    Ok(())
+}
+
+/// Open or focus the updater window (called from toast click / settings page)
+#[tauri::command]
+pub async fn open_updater_window(app: AppHandle) -> Result<(), String> {
+    crate::open_updater_window(&app);
     Ok(())
 }

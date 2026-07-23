@@ -18,12 +18,19 @@ export interface AppConf {
   }>;
 }
 
+export interface WebProxyInfo {
+  domain?: string;
+  prefix?: string;
+  protocol?: string;
+}
+
 export interface WellKnownInfo {
   name: string | null;
   version: string | null;
   openapi: string | null;
   dashboard: string | null;
   issuer_url: string | null;
+  webproxy?: WebProxyInfo;
 }
 
 export interface ProxyStatus {
@@ -49,9 +56,10 @@ export async function startProxy(
   serverUrl: string,
   token: string,
   authMode: string,
-  dashboard: string = ""
+  dashboard: string = "",
+  webproxyDomain: string = ""
 ): Promise<number> {
-  return invoke<number>("start_proxy", { serverUrl, token, authMode, dashboard });
+  return invoke<number>("start_proxy", { serverUrl, token, authMode, dashboard, webproxyDomain });
 }
 
 /** Get current proxy status */

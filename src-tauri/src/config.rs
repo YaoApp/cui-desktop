@@ -32,6 +32,9 @@ pub struct ProxyState {
     /// Used to redirect /{dashboard}/* → /__yao_admin_root/* so that
     /// server-side redirects (login success_url etc.) land on local CUI.
     pub dashboard: String,
+    /// WebProxy domain from .well-known/yao (e.g. "bj.yaoagents.cn").
+    /// Used by tunnel_inject.js to detect iframe sandbox URLs in domain mode.
+    pub webproxy_domain: String,
 }
 
 impl Default for ProxyState {
@@ -43,6 +46,7 @@ impl Default for ProxyState {
             token: String::new(),
             auth_mode: String::from("openapi"),
             dashboard: String::new(),
+            webproxy_domain: String::new(),
         }
     }
 }
@@ -52,7 +56,7 @@ pub static PROXY_STATE: Lazy<RwLock<ProxyState>> = Lazy::new(|| {
     RwLock::new(ProxyState::default())
 });
 
-pub fn update_proxy_state(server_url: &str, token: &str, auth_mode: &str, dashboard: &str) {
+pub fn update_proxy_state(server_url: &str, token: &str, auth_mode: &str, dashboard: &str, webproxy_domain: &str) {
     let mut state = PROXY_STATE.write();
     state.server_url = server_url.to_string();
     state.token = token.to_string();
@@ -66,6 +70,7 @@ pub fn update_proxy_state(server_url: &str, token: &str, auth_mode: &str, dashbo
     } else {
         format!("/{}", d)
     };
+    state.webproxy_domain = webproxy_domain.to_string();
 }
 
 pub fn set_proxy_running(running: bool) {
@@ -382,13 +387,41 @@ pub fn tray_label(key: &str) -> String {
         ("show", "zh") => "显示窗口".into(),
         ("servers", "zh") => "切换服务器".into(),
         ("settings", "zh") => "设置".into(),
+        ("check_update", "zh") => "检查更新".into(),
         ("quit", "zh") => "退出".into(),
         ("switch_confirm", "zh") => "切换服务器将退出当前登录，是否继续？".into(),
+        ("up_to_date", "zh") => "当前已是最新版本".into(),
+        ("update_check_failed", "zh") => "检查更新失败，请稍后重试".into(),
         ("show", _) => "Show Window".into(),
         ("servers", _) => "Switch Server".into(),
         ("settings", _) => "Settings".into(),
+        ("check_update", _) => "Check for Updates".into(),
         ("quit", _) => "Quit".into(),
         ("switch_confirm", _) => "Switching server will end your current session. Continue?".into(),
+        ("up_to_date", _) => "You're up to date.".into(),
+        ("update_check_failed", _) => "Update check failed. Please try again later.".into(),
+        _ => key.into(),
+    }
+}
+
+/// Return localized text for proxy error pages (401/403/404)
+pub fn error_page_text(key: &str) -> String {
+    let lang = get_ui_lang();
+    match (key, lang.as_str()) {
+        ("session_expired_title", "zh") => "会话已过期".into(),
+        ("session_expired_title", _) => "Session Expired".into(),
+        ("session_expired_desc", "zh") => "登录凭证已失效，请重新连接服务器".into(),
+        ("session_expired_desc", _) => "Your session has expired. Please reconnect to the server.".into(),
+        ("btn_server_list", "zh") => "返回服务器列表".into(),
+        ("btn_server_list", _) => "Back to Server List".into(),
+        ("btn_reload", "zh") => "重新登录".into(),
+        ("btn_reload", _) => "Reload".into(),
+        ("not_found_title", "zh") => "页面未找到".into(),
+        ("not_found_title", _) => "Page Not Found".into(),
+        ("not_found_desc", "zh") => "请求的页面不存在".into(),
+        ("not_found_desc", _) => "The page you requested does not exist.".into(),
+        ("btn_go_back", "zh") => "返回上一页".into(),
+        ("btn_go_back", _) => "Go Back".into(),
         _ => key.into(),
     }
 }
@@ -544,16 +577,18 @@ mod tests {
     #[test]
     fn update_proxy_state_normalizes_dashboard() {
         let _lock = TEST_MUTEX.lock().unwrap();
-        update_proxy_state("http://example.com", "tok", "openapi", "dashboard/");
+        update_proxy_state("http://example.com", "tok", "openapi", "dashboard/", "");
         let s = get_proxy_state();
         assert_eq!(s.dashboard, "/dashboard");
 
-        update_proxy_state("http://example.com", "tok", "openapi", "/admin/");
+        update_proxy_state("http://example.com", "tok", "openapi", "/admin/", "test.example.com");
         let s = get_proxy_state();
         assert_eq!(s.dashboard, "/admin");
+        assert_eq!(s.webproxy_domain, "test.example.com");
 
-        update_proxy_state("http://example.com", "tok", "openapi", "");
+        update_proxy_state("http://example.com", "tok", "openapi", "", "");
         let s = get_proxy_state();
         assert_eq!(s.dashboard, "");
+        assert_eq!(s.webproxy_domain, "");
     }
 }

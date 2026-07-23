@@ -567,3 +567,125 @@ html, body {
   height: 14px;
   background: var(--color-border);
 }
+
+/* ===== Updater Page ===== */
+.updater-container {
+  display: flex;
+  flex-direction: column;
+  padding: 32px 28px 24px;
+  height: 100vh;
+  overflow: auto;
+}
+
+.updater-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.updater-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.updater-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.updater-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.updater-subtitle {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.updater-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.updater-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.updater-label {
+  color: var(--color-text-secondary);
+}
+
+.updater-value {
+  color: var(--color-text);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.updater-notes-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+
+.updater-notes {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  background: var(--color-input-bg);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin-bottom: 16px;
+}
+
+.updater-status {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  text-align: center;
+  padding: 16px 0;
+}
+
+.updater-actions {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+.updater-progress-text {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.updater-progress-bar {
+  height: 6px;
+  background: var(--color-input-bg);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.updater-progress-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--color-main), var(--color-main-end));
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}

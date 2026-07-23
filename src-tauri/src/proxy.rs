@@ -195,6 +195,13 @@ async fn proxy_request(req: Request, client: Client) -> Response {
         .unwrap_or("")
         .to_string();
 
+    // Save Accept header for error page interception
+    let req_accept = req.headers()
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
     // Copy headers (skip hop-by-hop; cookie is handled separately below)
     for (name, value) in req.headers() {
         let name_str = name.as_str().to_lowercase();
@@ -266,6 +273,20 @@ async fn proxy_request(req: Request, client: Client) -> Response {
 
     // Build response
     let status = upstream_resp.status();
+
+    // Intercept error responses for HTML page requests with friendly custom pages
+    if req_accept.contains("text/html") {
+        match status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return serve_session_expired_page(path_and_query);
+            }
+            StatusCode::NOT_FOUND => {
+                return serve_not_found_page(path_and_query);
+            }
+            _ => {}
+        }
+    }
+
     let mut response_builder = Response::builder().status(status.as_u16());
 
     let is_sse = upstream_resp.headers()
@@ -743,7 +764,8 @@ async fn serve_cui_static(path: &str, cui_dist: &PathBuf, if_none_match: Option<
                         let js = include_str!("tunnel_inject.js")
                             .replace("__PROXY_PORT__", &proxy_port.to_string())
                             .replace("__REMOTE_HOST__", &remote_host)
-                            .replace("__MAIN_PORT__", &main_port.to_string());
+                            .replace("__MAIN_PORT__", &main_port.to_string())
+                            .replace("__WEBPROXY_DOMAIN__", &state.webproxy_domain);
                         format!("<script>{}</script>", js)
                     } else {
                         String::new()
@@ -1120,6 +1142,130 @@ fn tungstenite_to_axum(msg: TungsteniteMessage) -> Option<AxumMessage> {
         }
         TungsteniteMessage::Frame(_) => None,
     }
+}
+
+/// Serve a custom "session expired" page for 401/403 HTML responses
+fn serve_session_expired_page(path: &str) -> Response {
+    let title = config::error_page_text("session_expired_title");
+    let desc = config::error_page_text("session_expired_desc");
+    let btn_servers = config::error_page_text("btn_server_list");
+    let btn_reload = config::error_page_text("btn_reload");
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>{css}</style>
+</head><body>
+<div class="card">
+  <div class="icon">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+    </svg>
+  </div>
+  <h1>{title}</h1>
+  <p class="desc">{desc}</p>
+  <p class="path">{path}</p>
+  <div class="actions">
+    <button class="btn-main" onclick="window.location.href='tauri://localhost'">{btn_servers}</button>
+    <button class="btn-ghost" onclick="window.location.reload()">{btn_reload}</button>
+  </div>
+</div>
+</body></html>"#,
+        css = error_page_css(),
+        title = html_escape(&title),
+        desc = html_escape(&desc),
+        path = html_escape(path),
+        btn_servers = html_escape(&btn_servers),
+        btn_reload = html_escape(&btn_reload),
+    );
+
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap()
+}
+
+/// Serve a custom "not found" page for 404 HTML responses
+fn serve_not_found_page(path: &str) -> Response {
+    let title = config::error_page_text("not_found_title");
+    let desc = config::error_page_text("not_found_desc");
+    let btn_back = config::error_page_text("btn_go_back");
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>{css}</style>
+</head><body>
+<div class="card">
+  <div class="icon">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M16 16s-1.5-2-4-2-4 2-4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>
+    </svg>
+  </div>
+  <h1>{title}</h1>
+  <p class="desc">{desc}</p>
+  <p class="path">{path}</p>
+  <div class="actions">
+    <button class="btn-main" onclick="window.history.back()">{btn_back}</button>
+  </div>
+</div>
+</body></html>"#,
+        css = error_page_css(),
+        title = html_escape(&title),
+        desc = html_escape(&desc),
+        path = html_escape(path),
+        btn_back = html_escape(&btn_back),
+    );
+
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap()
+}
+
+/// Shared CSS for error pages — dark/light adaptive, centered card layout
+fn error_page_css() -> &'static str {
+    r#"
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;
+  background:#f5f7fa;color:#1a1a2e}
+.card{background:#fff;border:1px solid #e8ecf0;border-radius:16px;padding:40px 36px;
+  max-width:400px;width:100%;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+.icon{color:#9ca3af;margin-bottom:20px}
+h1{font-size:20px;font-weight:600;margin-bottom:8px}
+.desc{font-size:14px;color:#6b7280;line-height:1.5;margin-bottom:12px}
+.path{font-size:12px;color:#9ca3af;background:#f0f2f5;border-radius:6px;padding:6px 10px;
+  margin-bottom:24px;word-break:break-all;font-family:"SF Mono","Fira Code",Menlo,Consolas,monospace}
+.actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.btn-main{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:500;
+  cursor:pointer;background:#3373fc;color:#fff;transition:opacity 0.2s}
+.btn-main:hover{opacity:0.85}
+.btn-ghost{padding:10px 20px;border:1px solid #e8ecf0;border-radius:8px;font-size:14px;
+  background:transparent;color:#6b7280;cursor:pointer;transition:background 0.2s}
+.btn-ghost:hover{background:#f0f2f5}
+@media(prefers-color-scheme:dark){
+  body{background:#0a0a0f;color:#e4e4e8}
+  .card{background:#16161e;border-color:#2a2a36;box-shadow:0 2px 8px rgba(0,0,0,0.3)}
+  h1{color:#e4e4e8}
+  .desc{color:#9ca3af}
+  .path{color:#9ca3af;background:#1e1e28}
+  .icon{color:#6b7280}
+  .btn-ghost{color:#9ca3af;border-color:#2a2a36}
+  .btn-ghost:hover{background:#1e1e28}
+}
+"#
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]

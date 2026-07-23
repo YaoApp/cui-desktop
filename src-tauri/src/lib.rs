@@ -232,6 +232,61 @@ fn eval_on_main(handle: &tauri::AppHandle, js: &str) {
     }
 }
 
+/// Generate JS to show an update-available toast in the main window.
+/// Reuses download toast CSS/container. Click invokes open_updater_window via Tauri IPC.
+fn format_update_toast_js(version: &str, lang: &str) -> String {
+    let (msg, btn_text) = match lang {
+        "zh" => (format!("发现新版本 v{}", version), "查看"),
+        _ => (format!("New version v{} available", version), "View"),
+    };
+    let msg_escaped = js_escape(&msg);
+    let btn_escaped = js_escape(btn_text);
+    format!(
+        r#"(function(){{
+var id='__yao_update_toast';
+var existing=document.getElementById(id);
+if(existing)existing.remove();
+var el=document.createElement('div');el.id=id;
+el.style.cssText='position:fixed;bottom:16px;right:16px;z-index:999999;display:flex;align-items:center;gap:12px;border-radius:10px;padding:14px 16px;width:320px;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;transition:opacity 0.3s,transform 0.3s;cursor:default';
+var isDark=window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches;
+if(isDark){{el.style.background='rgba(28,28,30,0.92)';el.style.color='#f0f0f0';el.style.boxShadow='0 8px 30px rgba(0,0,0,0.4)'}}
+else{{el.style.background='rgba(255,255,255,0.95)';el.style.color='#111';el.style.boxShadow='0 8px 30px rgba(0,0,0,0.08),0 0 0 0.5px rgba(0,0,0,0.04)'}}
+var icon=document.createElement('div');
+icon.style.cssText='flex-shrink:0;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:'+(isDark?'rgba(96,165,250,0.12)':'rgba(59,130,246,0.08)');
+icon.innerHTML='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="'+(isDark?'#60a5fa':'#3b82f6')+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+el.appendChild(icon);
+var right=document.createElement('div');right.style.cssText='flex:1;min-width:0';
+var title=document.createElement('div');title.style.cssText='font-size:13px;font-weight:600;line-height:1.4';title.textContent="{msg_escaped}";
+right.appendChild(title);
+var btn=document.createElement('button');
+btn.style.cssText='margin-top:6px;font-size:12px;cursor:pointer;border:none;background:none;padding:0;font-family:inherit;line-height:1;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;color:'+(isDark?'rgba(255,255,255,0.55)':'rgba(0,0,0,0.45)');
+btn.textContent="{btn_escaped}";
+btn.addEventListener('click',function(){{
+  if(window.__TAURI__&&window.__TAURI__.core){{window.__TAURI__.core.invoke('open_updater_window')}}
+  el.remove();
+}});
+right.appendChild(btn);
+el.appendChild(right);
+var close=document.createElement('button');
+close.style.cssText='position:absolute;top:10px;right:10px;width:18px;height:18px;background:none;border:none;cursor:pointer;padding:0;border-radius:50%;display:flex;align-items:center;justify-content:center;color:'+(isDark?'rgba(255,255,255,0.3)':'rgba(0,0,0,0.2)');
+close.innerHTML='<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+close.addEventListener('click',function(ev){{ev.stopPropagation();el.remove()}});
+el.appendChild(close);
+document.body.appendChild(el);
+var _hovered=false;
+el.addEventListener('mouseenter',function(){{_hovered=true}});
+el.addEventListener('mouseleave',function(){{_hovered=false}});
+setTimeout(function tick(){{
+  if(_hovered){{setTimeout(tick,1000);return}}
+  el.style.opacity='0';el.style.transform='translateX(20px)';
+  setTimeout(function(){{el.remove()}},400);
+}},8000);
+}})();"#,
+        msg_escaped = msg_escaped,
+        btn_escaped = btn_escaped,
+    )
+}
+
 fn open_in_system_browser(url: &str) {
     #[cfg(target_os = "macos")]
     { let _ = std::process::Command::new("open").arg(url).spawn(); }
@@ -261,6 +316,39 @@ fn is_external_url(url: &str) -> bool {
             }
         }
         return true;
+    }
+    false
+}
+
+/// Detect OAuth/SSO/auth-related URLs that should stay in the WebView.
+/// Matches: typical OAuth query params, auth-related paths, and known auth infrastructure domains.
+fn is_oauth_url(url: &str) -> bool {
+    if let Ok(parsed) = url::Url::parse(url) {
+        // Known auth infrastructure domains (Cloudflare challenges, captchas, etc.)
+        let host = parsed.host_str().unwrap_or("");
+        if host.ends_with(".cloudflare.com") || host.ends_with(".hcaptcha.com")
+            || host.ends_with(".recaptcha.net") || host.ends_with(".gstatic.com")
+            || host == "challenges.cloudflare.com"
+        {
+            return true;
+        }
+
+        // OAuth URLs typically carry these query params
+        let query = parsed.query().unwrap_or("");
+        if query.contains("client_id=") || query.contains("redirect_uri=")
+            || query.contains("response_type=") || query.contains("scope=")
+        {
+            return true;
+        }
+
+        // Auth-related URL paths
+        let path = parsed.path();
+        if path.contains("/oauth") || path.contains("/authorize")
+            || path.contains("/login/oauth") || path.contains("/connect/authorize")
+            || path.contains("/cdn-cgi/challenge-platform")
+        {
+            return true;
+        }
     }
     false
 }
@@ -424,8 +512,16 @@ pub fn run() {
                         }
                     }
 
-                    // Allow all other navigation (Google OAuth, GitHub, etc.)
-                    debug!("External navigation: {}", url_str);
+                    // External URL: open in system browser unless it's OAuth
+                    if is_external_url(url_str) {
+                        if is_oauth_url(url_str) {
+                            debug!("Allowing OAuth navigation: {}", url_str);
+                            return true;
+                        }
+                        info!("Opening external URL in browser: {}", url_str);
+                        open_in_system_browser(url_str);
+                        return false;
+                    }
                     true
                 })
                 // Intercept window.open / target="_blank":
@@ -713,6 +809,21 @@ pub fn run() {
                 })
                 .build()?;
 
+            // ── Version change cache clear ──
+            // After upgrade, clear WebView browsing data to avoid stale cache.
+            // Safe because auth tokens live in Rust-side JSON, not WebView cookies.
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(&data_dir);
+                let version_file = data_dir.join("last_version.txt");
+                let current = app.package_info().version.to_string();
+                let last = std::fs::read_to_string(&version_file).unwrap_or_default();
+                if last.trim() != current {
+                    let _ = window.clear_all_browsing_data();
+                    info!("Version changed {:?} -> {}, cleared browsing data", last.trim(), current);
+                    let _ = std::fs::write(&version_file, &current);
+                }
+            }
+
             // Background thread: process redirect requests
             let webview = window.clone();
             std::thread::spawn(move || {
@@ -721,6 +832,39 @@ pub fn run() {
                         info!("Redirecting to proxy: {}", parsed);
                         let _ = webview.navigate(parsed);
                     }
+                }
+            });
+
+            // ── Startup update check ──
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+
+                let conf = app_conf::get_app_conf();
+                if !conf.updater.active { return; }
+
+                // Wait for main window to be loaded (poll up to 15s)
+                for _ in 0..30 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if let Some(win) = update_handle.get_webview_window("main") {
+                        if let Ok(url) = win.url() {
+                            let s = url.as_str();
+                            if !s.is_empty() && s != "about:blank" { break; }
+                        }
+                    }
+                }
+
+                let updater = match update_handle.updater_builder().build() {
+                    Ok(u) => u,
+                    Err(e) => { debug!("Updater build failed: {}", e); return; }
+                };
+                match updater.check().await {
+                    Ok(Some(update)) => {
+                        let js = format_update_toast_js(&update.version, &config::get_ui_lang());
+                        eval_on_main(&update_handle, &js);
+                    }
+                    Ok(None) => { /* up to date */ }
+                    Err(e) => { debug!("Startup update check failed: {}", e); }
                 }
             });
 
@@ -750,9 +894,30 @@ pub fn run() {
             commands::set_window_theme,
             commands::set_ui_language,
             commands::sync_preferences,
+            commands::open_updater_window,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to start Tauri application");
+}
+
+/// Open or focus the updater window
+pub fn open_updater_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("updater") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    } else {
+        let title = app_conf::get_app_conf().name;
+        let _ = WebviewWindowBuilder::new(
+            app,
+            "updater",
+            WebviewUrl::App("/updater".into()),
+        )
+        .title(title)
+        .inner_size(460.0, 380.0)
+        .resizable(false)
+        .center()
+        .build();
+    }
 }
 
 /// Build the tray menu with localized labels
@@ -760,8 +925,9 @@ fn build_tray_menu<R: tauri::Runtime>(app: &impl Manager<R>) -> Result<Menu<R>, 
     let show = MenuItem::with_id(app, "show", config::tray_label("show"), true, None::<&str>)?;
     let servers = MenuItem::with_id(app, "servers", config::tray_label("servers"), true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", config::tray_label("settings"), true, None::<&str>)?;
+    let check_update = MenuItem::with_id(app, "check_update", config::tray_label("check_update"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", config::tray_label("quit"), true, None::<&str>)?;
-    Ok(Menu::with_items(app, &[&show, &servers, &settings, &quit])?)
+    Ok(Menu::with_items(app, &[&show, &servers, &settings, &check_update, &quit])?)
 }
 
 /// When the window is restored from tray, check if it's showing a stale proxy page.
@@ -853,6 +1019,46 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         .resizable(true)
                         .build();
                     }
+                }
+                "check_update" => {
+                    use std::sync::atomic::AtomicBool;
+                    use tauri_plugin_updater::UpdaterExt;
+                    use tauri_plugin_dialog::DialogExt;
+
+                    static IS_CHECKING: AtomicBool = AtomicBool::new(false);
+                    if IS_CHECKING.swap(true, Ordering::SeqCst) { return; }
+
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match handle.updater_builder().build() {
+                            Ok(updater) => match updater.check().await {
+                                Ok(Some(_update)) => {
+                                    open_updater_window(&handle);
+                                }
+                                Ok(None) => {
+                                    handle.dialog()
+                                        .message(config::tray_label("up_to_date"))
+                                        .title(config::tray_label("check_update"))
+                                        .show(|_| {});
+                                }
+                                Err(e) => {
+                                    warn!("Update check failed: {}", e);
+                                    handle.dialog()
+                                        .message(config::tray_label("update_check_failed"))
+                                        .title(config::tray_label("check_update"))
+                                        .show(|_| {});
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Updater build failed: {}", e);
+                                handle.dialog()
+                                    .message(config::tray_label("update_check_failed"))
+                                    .title(config::tray_label("check_update"))
+                                    .show(|_| {});
+                            }
+                        }
+                        IS_CHECKING.store(false, Ordering::SeqCst);
+                    });
                 }
                 "quit" => {
                     info!("Quit from tray");

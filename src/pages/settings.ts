@@ -3,9 +3,7 @@ import { clearAll } from "../lib/store";
 import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
 
 let _settingsSyncCleanup: (() => void) | null = null;
 
@@ -80,7 +78,6 @@ export async function renderSettings(): Promise<void> {
         <div class="settings-item">
           <span class="label"></span>
           <button class="btn-ghost btn-sm" id="check-update-btn">${escapeHtml(t("settings.check_update"))}</button>
-          <span id="update-status" class="value" style="margin-left:8px"></span>
         </div>
       </div>
 
@@ -136,33 +133,9 @@ export async function renderSettings(): Promise<void> {
     renderSettings();
   });
 
-  // Check for update
+  // Check for update — open the dedicated updater window
   document.getElementById("check-update-btn")!.addEventListener("click", async () => {
-    const statusEl = document.getElementById("update-status")!;
-    const btn = document.getElementById("check-update-btn") as HTMLButtonElement;
-    btn.disabled = true;
-    statusEl.textContent = t("settings.checking");
-
-    try {
-      const update = await check();
-      if (update) {
-        statusEl.textContent = t("settings.new_version").replace("{version}", update.version);
-        btn.textContent = t("settings.downloading");
-        await update.downloadAndInstall();
-        btn.textContent = t("settings.restart_now");
-        btn.disabled = false;
-        btn.onclick = async () => {
-          try { await getCurrentWebview().clearAllBrowsingData(); } catch { /* ignore */ }
-          await relaunch();
-        };
-      } else {
-        statusEl.textContent = t("settings.up_to_date");
-        btn.disabled = false;
-      }
-    } catch (err) {
-      statusEl.textContent = `${t("settings.update_error")}: ${err}`;
-      btn.disabled = false;
-    }
+    await invoke("open_updater_window");
   });
 
   // Data actions
