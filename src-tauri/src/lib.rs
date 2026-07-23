@@ -304,7 +304,11 @@ fn is_external_url(url: &str) -> bool {
             return false;
         }
         let host = parsed.host_str().unwrap_or("");
-        if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+        if host == "127.0.0.1"
+            || host == "localhost"
+            || host.ends_with(".localhost")
+            || host == "::1"
+        {
             return false;
         }
         let state = config::get_proxy_state();
@@ -486,8 +490,9 @@ pub fn run() {
                 .on_navigation(move |url| {
                     let url_str = url.as_str();
 
-                    // Always allow: tauri://, localhost
+                    // Always allow: tauri://, tauri.localhost (Windows), localhost
                     if url_str.starts_with("tauri://")
+                        || url_str.starts_with("http://tauri.localhost")
                         || url_str.starts_with("http://localhost")
                     {
                         return true;

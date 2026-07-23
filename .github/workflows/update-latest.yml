@@ -99,6 +99,21 @@ jobs:
 
           cat latest.json
 
+      - name: Validate platform coverage
+        run: |
+          EXPECTED="darwin-aarch64 darwin-x86_64 windows-x86_64"
+          MISSING=""
+          for p in $EXPECTED; do
+            if ! jq -e ".platforms[\"$p\"]" latest.json > /dev/null 2>&1; then
+              MISSING="$MISSING $p"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::warning::Missing platforms in latest.json:$MISSING"
+          else
+            echo "All expected platforms present."
+          fi
+
       - name: Upload versioned latest.json
         run: |
           VERSION="${{ github.event.inputs.version }}"

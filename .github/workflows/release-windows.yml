@@ -109,10 +109,74 @@ jobs:
           cd ..
           echo "Patched to version ${VERSION}"
 
+      - name: Verify updater secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          FAIL=0
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set! Cannot generate .sig files."
+            FAIL=1
+          else
+            echo "TAURI_SIGNING_PRIVATE_KEY configured (length: ${#TAURI_SIGNING_PRIVATE_KEY})"
+          fi
+          if [ -z "$TAURI_UPDATER_PUBKEY" ]; then
+            echo "::error::TAURI_UPDATER_PUBKEY is not set! App cannot verify update signatures at runtime."
+            FAIL=1
+          else
+            echo "TAURI_UPDATER_PUBKEY configured (length: ${#TAURI_UPDATER_PUBKEY})"
+          fi
+          [ $FAIL -eq 0 ] || exit 1
+
       - name: Build Tauri app
         run: cargo tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      - name: Create updater package
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+
+          echo "=== Bundle directory contents ==="
+          find "$BUNDLE_DIR" -type f | sort
+
+          # Find the NSIS setup exe
+          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
+          if [ -z "$NSIS_EXE" ]; then
+            echo "::error::No NSIS setup exe found in bundle output!"
+            exit 1
+          fi
+          echo "Found NSIS exe: $NSIS_EXE"
+
+          # Create .nsis.zip (Tauri v2 updater format: zip wrapping the installer)
+          ZIP_NAME="yaoagents-${VERSION}-windows-x64-setup.nsis.zip"
+          python3 -c "
+          import zipfile, os, sys
+          exe = sys.argv[1]
+          out = sys.argv[2]
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+              z.write(exe, os.path.basename(exe))
+          print(f'Created: {out} ({os.path.getsize(out)} bytes)')
+          " "$NSIS_EXE" "$BUNDLE_DIR/nsis/${ZIP_NAME}"
+
+          # Sign the .nsis.zip with Tauri signer (cargo tauri-cli already installed)
+          cargo tauri signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "" \
+            "$BUNDLE_DIR/nsis/${ZIP_NAME}"
+
+          # Verify outputs
+          if [ ! -f "$BUNDLE_DIR/nsis/${ZIP_NAME}.sig" ]; then
+            echo "::error::Failed to create .nsis.zip.sig!"
+            exit 1
+          fi
+          echo "Updater package created and signed successfully."
 
       - name: Collect artifacts
         shell: bash
@@ -124,12 +188,13 @@ jobs:
           MSI_FILE=$(find "$BUNDLE_DIR/msi" -name "*.msi" 2>/dev/null | head -1)
           [ -n "$MSI_FILE" ] && cp "$MSI_FILE" "release/yaoagents-${VERSION}-windows.msi"
 
-          NSIS_ZIP=$(find "$BUNDLE_DIR/nsis" -name "*.nsis.zip" 2>/dev/null | head -1)
-          NSIS_SIG=$(find "$BUNDLE_DIR/nsis" -name "*.nsis.zip.sig" 2>/dev/null | head -1)
           NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
-          [ -n "$NSIS_ZIP" ] && cp "$NSIS_ZIP" "release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip"
-          [ -n "$NSIS_SIG" ] && cp "$NSIS_SIG" "release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip.sig"
           [ -n "$NSIS_EXE" ] && cp "$NSIS_EXE" "release/yaoagents-${VERSION}-windows-x64-setup.exe"
+
+          # Copy the updater package (created in previous step)
+          ZIP_NAME="yaoagents-${VERSION}-windows-x64-setup.nsis.zip"
+          cp "$BUNDLE_DIR/nsis/${ZIP_NAME}" "release/${ZIP_NAME}"
+          cp "$BUNDLE_DIR/nsis/${ZIP_NAME}.sig" "release/${ZIP_NAME}.sig"
 
           ls -la release/
 
@@ -151,10 +216,19 @@ jobs:
             echo "R2 credentials not set, skipping CDN upload."
             exit 0
           fi
+
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Ensure the updater signature file exists before uploading
+          SIG="release/yaoagents-${VERSION}-windows-x64-setup.nsis.zip.sig"
+          if [ ! -f "$SIG" ]; then
+            echo "::error::Missing updater signature: $SIG"
+            exit 1
+          fi
+
           aws configure set default.region us-east-1
           aws configure set default.s3.signature_version s3v4
 
-          VERSION="${{ steps.version.outputs.version }}"
           CDN_PREFIX="s3://${R2_BUCKET}/yaoagents/${VERSION}"
 
           upload_file() {
