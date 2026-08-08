@@ -830,7 +830,8 @@ pub fn run() {
                 let last = std::fs::read_to_string(&version_file).unwrap_or_default();
                 if last.trim() != current {
                     let _ = window.clear_all_browsing_data();
-                    info!("Version changed {:?} -> {}, cleared browsing data", last.trim(), current);
+                    let _ = std::fs::write(&data_dir.join("cookies.json"), "[]");
+                    info!("Version changed {:?} -> {}, cleared browsing data + proxy cookies", last.trim(), current);
                     let _ = std::fs::write(&version_file, &current);
                 }
             }

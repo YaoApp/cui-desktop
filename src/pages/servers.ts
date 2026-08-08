@@ -14,6 +14,7 @@ const DEFAULT_CONF: AppConf = {
 };
 
 let _serversSyncCleanup: (() => void) | null = null;
+let _autoReconnectDone = false;
 
 /** Render the server selection page */
 export async function renderServers(): Promise<void> {
@@ -46,6 +47,36 @@ export async function renderServers(): Promise<void> {
 
   // Merge config presets + user servers
   const allServers = mergeServers(settings.servers, conf.servers);
+
+  // One-shot auto-reconnect: on first render, if there was an active server, reconnect
+  if (!_autoReconnectDone && settings.activeServerUrl) {
+    _autoReconnectDone = true;
+    const server = allServers.find(s => s.url === settings.activeServerUrl);
+    if (server) {
+      app.innerHTML = `
+        <div class="page-servers">
+          <div class="servers-panel fade-in" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:320px">
+            <div class="spinner spinner-dark spinner-lg"></div>
+            <p style="margin-top:16px;color:#6b7280;font-size:14px">${escapeHtml(t("app.connecting"))} ${escapeHtml(server.label || server.url)}</p>
+          </div>
+        </div>
+      `;
+      try {
+        let dashboard = "";
+        let webproxyDomain = "";
+        try {
+          const info = await checkServer(server.url);
+          if (info.dashboard) dashboard = info.dashboard;
+          if (info.webproxy?.domain) webproxyDomain = info.webproxy.domain;
+        } catch { /* older server, proceed without dashboard info */ }
+        await startProxy(server.url, "", "openapi", dashboard, webproxyDomain);
+        navigate("/app");
+        return;
+      } catch {
+        // Auto-reconnect failed, fall through to render full servers page
+      }
+    }
+  }
 
   // Apply theme
   const primary = conf.theme?.primaryColor || "#3373fc";
