@@ -15,7 +15,7 @@ use tauri::{
     image::Image,
     WindowEvent,
 };
-use tauri::webview::{DownloadEvent, NewWindowResponse};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse};
 use futures_util::StreamExt;
 use tracing::{info, debug, warn};
 use tracing_subscriber::EnvFilter;
@@ -446,6 +446,12 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .on_permission_request(|_webview, kind| {
+            match kind {
+                PermissionKind::Microphone => PermissionResponse::Allow,
+                _ => PermissionResponse::Default,
+            }
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();

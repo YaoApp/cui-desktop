@@ -14,10 +14,10 @@ name = "cui-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["devtools", "tray-icon", "image-png"] }
+tauri = { version = "2.11", features = ["devtools", "tray-icon", "image-png"] }
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
@@ -46,6 +46,12 @@ base64 = "0.22"
 
 [dev-dependencies]
 libc = "0.2"
+
+[patch.crates-io]
+tauri = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
+tauri-runtime = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
+tauri-runtime-wry = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
+wry = { git = "https://github.com/tauri-apps/wry", branch = "dev" }
 
 [profile.release]
 strip = true
