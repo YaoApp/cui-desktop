@@ -161,6 +161,7 @@ jobs:
             exit 1
           fi
           codesign --deep --force --verbose --timestamp --options runtime \
+            --entitlements src-tauri/Entitlements.plist \
             --sign "$IDENTITY" "$APP_BUNDLE"
           codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
