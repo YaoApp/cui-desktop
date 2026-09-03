@@ -51,7 +51,7 @@ libc = "0.2"
 tauri = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
 tauri-runtime = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
 tauri-runtime-wry = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
-wry = { git = "https://github.com/tauri-apps/wry", branch = "dev" }
+wry = { git = "https://github.com/tauri-apps/wry", tag = "wry-v0.56.0" }
 
 [profile.release]
 strip = true
