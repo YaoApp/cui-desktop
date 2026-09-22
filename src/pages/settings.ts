@@ -1,6 +1,7 @@
 import { getAppConf, getProxyStatus, clearCookies } from "../lib/api";
 import { clearAll } from "../lib/store";
 import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
+import { confirmDialog, alertDialog } from "../lib/confirm-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -140,21 +141,18 @@ export async function renderSettings(): Promise<void> {
 
   // Data actions
   document.getElementById("clear-cookies-btn")!.addEventListener("click", async () => {
-    if (confirm(t("settings.confirm_cookies"))) {
+    if (await confirmDialog(t("settings.confirm_cookies"))) {
       await clearCookies();
-      alert(t("settings.cookies_cleared"));
+      await alertDialog(t("settings.cookies_cleared"));
+      await invoke("navigate_to_servers");
     }
   });
 
   document.getElementById("clear-all-btn")!.addEventListener("click", async () => {
-    if (confirm(t("settings.confirm_all"))) {
+    if (await confirmDialog(t("settings.confirm_all"))) {
       await clearCookies();
       await clearAll();
-      try {
-        await getCurrentWindow().close();
-      } catch {
-        window.close();
-      }
+      await invoke("navigate_to_servers");
     }
   });
 }

@@ -279,6 +279,94 @@ pub async fn set_preference_cookies(locale: String, theme: String) -> Result<(),
     Ok(())
 }
 
+/// A cloud server entry returned by the Yao Cloud portal's ServerList RPC.
+/// Field names use snake_case to match the JSON response.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CloudServerInfo {
+    pub name: String,
+    pub slug: String,
+    pub url: String,
+    pub region: Option<String>,
+    pub status: Option<String>,
+    pub contact_email: Option<String>,
+}
+
+/// Fetch the cloud server list from the Yao Cloud portal.
+/// The portal is a public endpoint (no auth required). The locale controls
+/// both the portal host (cloudBase) and the localized display names.
+#[tauri::command]
+pub async fn fetch_cloud_servers(cloud_base: String, locale: String) -> Result<Vec<CloudServerInfo>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let url = format!("{}/v1/__yao/sui/v1/run/servers", cloud_base.trim_end_matches('/'));
+    let body = serde_json::json!({"method": "ServerList", "args": [locale]});
+    info!("Fetching cloud servers: {} locale={}", url, locale);
+
+    let resp = client.post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch cloud servers: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Cloud server list request failed ({})", resp.status()));
+    }
+
+    let arr: Vec<serde_json::Value> = resp.json().await
+        .map_err(|e| format!("Failed to parse cloud server list: {}", e))?;
+
+    let servers: Vec<CloudServerInfo> = arr.iter().filter_map(|o| {
+        let url = o.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if url.is_empty() {
+            return None;
+        }
+        Some(CloudServerInfo {
+            name: o.get("name").and_then(|v| v.as_str())
+                .or_else(|| o.get("slug").and_then(|v| v.as_str()))
+                .unwrap_or("").to_string(),
+            slug: o.get("slug").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            url,
+            region: o.get("region").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+            status: o.get("status").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+            contact_email: o.get("contact_email").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        })
+    }).collect();
+
+    info!("Fetched {} cloud servers", servers.len());
+    Ok(servers)
+}
+
+/// Navigate the main window back to the server selection page.
+/// Resets the proxy state (cookies, token, server URL) so stale credentials
+/// are not reused when the user reconnects. The axum server keeps its port;
+/// clearing server_url causes it to return 502 for any stray requests until
+/// the next start_proxy call effectively "restarts" it with fresh config.
+/// Closes the calling window (settings) first, then shows the main window
+/// so macOS does not re-hide it when the settings window disappears.
+#[tauri::command]
+pub async fn navigate_to_servers(app: AppHandle) -> Result<(), String> {
+    if let Some(settings) = app.get_webview_window("settings") {
+        let _ = settings.close();
+    }
+
+    // Reset proxy state so stale cookies/tokens are not reused
+    config::reset_proxy_session();
+
+    if let Some(win) = app.get_webview_window("main") {
+        let mut url = crate::shell_ui_url();
+        url.set_query(Some("switch=1"));
+        let _ = win.navigate(url);
+        let _ = win.show();
+        let _ = win.set_focus();
+        info!("Main window navigated to server selection (proxy state reset)");
+    }
+    Ok(())
+}
+
 /// Open or focus the updater window (called from toast click / settings page)
 #[tauri::command]
 pub async fn open_updater_window(app: AppHandle) -> Result<(), String> {

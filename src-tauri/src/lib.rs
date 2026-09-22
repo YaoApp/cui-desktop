@@ -23,6 +23,41 @@ use tracing_subscriber::EnvFilter;
 /// Global counter for generating unique popup window labels
 static POPUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Add a hidden NSToolbar so macOS centers the window title.
+/// Without a toolbar the title sits left-aligned next to the traffic lights.
+/// The toolbar is immediately hidden after being attached — macOS still centers
+/// the title as long as the window's `toolbar` property is set, even when not visible.
+#[cfg(target_os = "macos")]
+fn center_macos_title(window: &tauri::WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    unsafe {
+        let ptr = match window.ns_window() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let ns_window = ptr as *mut AnyObject;
+
+        let toolbar: *mut AnyObject = objc2::msg_send![
+            objc2::class!(NSToolbar),
+            alloc
+        ];
+        let toolbar_id = objc2_foundation::NSString::from_str("main-toolbar");
+        let toolbar: *mut AnyObject = objc2::msg_send![
+            toolbar,
+            initWithIdentifier: &*toolbar_id
+        ];
+
+        let _: () = msg_send![ns_window, setToolbar: toolbar];
+        let _: () = msg_send![ns_window, setToolbarStyle: 2_i64];
+
+        // Hide toolbar to remove blank area; centering persists because
+        // the window knows it has a toolbar even when not visible.
+        let _: () = msg_send![toolbar, setVisible: false];
+    }
+}
+
 /// Tracks download destinations set during DownloadEvent::Requested,
 /// so we can retrieve the file path in DownloadEvent::Finished
 /// (WebKit may return path=None even on success).
@@ -197,6 +232,60 @@ window.__yaoDownloadToast={
     autoHide(id,8000);
   }
 };
+})()
+"#;
+
+/// Self-contained JS that injects a custom centered title bar into popup windows.
+/// Used on Windows/Linux only (macOS keeps native decorations with centered titles).
+const CUSTOM_TITLEBAR_JS: &str = r#"
+(function(){
+if(document.getElementById('__yao_titlebar'))return;
+var S=document.createElement('style');
+S.textContent=`
+#__yao_titlebar{position:fixed;top:0;left:0;right:0;height:38px;z-index:999999;
+  display:flex;align-items:center;justify-content:center;
+  -webkit-app-region:drag;user-select:none;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:13px;font-weight:500;transition:background 0.2s,color 0.2s}
+#__yao_titlebar_text{flex:1;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  padding:0 80px}
+.__yao_tb_controls{position:absolute;right:0;top:0;height:100%;display:flex;align-items:center;
+  -webkit-app-region:no-drag}
+.__yao_tb_btn{width:46px;height:100%;border:none;background:none;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:background 0.15s}
+.__yao_tb_btn svg{width:10px;height:10px}
+.__yao_tb_btn.close:hover{background:#e81123}
+.__yao_tb_btn.close:hover svg{stroke:#fff}
+#__yao_titlebar{background:rgba(255,255,255,0.97);color:#1a1a2e;border-bottom:1px solid #e8ecf0}
+.__yao_tb_btn:hover{background:rgba(0,0,0,0.04)}
+.__yao_tb_btn svg{stroke:#666}
+[data-theme="dark"] #__yao_titlebar{background:rgba(30,30,36,0.97);color:#e4e4e8;border-bottom:1px solid #2a2a36}
+[data-theme="dark"] .__yao_tb_btn:hover{background:rgba(255,255,255,0.06)}
+[data-theme="dark"] .__yao_tb_btn svg{stroke:#b0b0b8}
+`;
+document.head.appendChild(S);
+var bar=document.createElement('div');bar.id='__yao_titlebar';
+var txt=document.createElement('span');txt.id='__yao_titlebar_text';
+txt.textContent=document.title;
+bar.appendChild(txt);
+var controls=document.createElement('div');controls.className='__yao_tb_controls';
+controls.innerHTML=
+  '<button class="__yao_tb_btn min" title="Minimize"><svg viewBox="0 0 10 1"><line x1="0" y1="0.5" x2="10" y2="0.5" stroke-width="1"/></svg></button>'
+  +'<button class="__yao_tb_btn max" title="Maximize"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke-width="1"/></svg></button>'
+  +'<button class="__yao_tb_btn close" title="Close"><svg viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke-width="1.2"/></svg></button>';
+bar.appendChild(controls);
+document.body.prepend(bar);
+document.body.style.paddingTop='38px';
+// Window controls via Tauri IPC (label omitted — Tauri v2 resolves to the calling window)
+function tauriInvoke(cmd){
+  try{
+    if(window.__TAURI__&&window.__TAURI__.core){window.__TAURI__.core.invoke(cmd).catch(function(){});}
+    else if(window.__TAURI_INTERNALS__){window.__TAURI_INTERNALS__.invoke(cmd);}
+  }catch(e){}
+}
+bar.querySelector('.min').addEventListener('click',function(){tauriInvoke('plugin:window|minimize');});
+bar.querySelector('.max').addEventListener('click',function(){tauriInvoke('plugin:window|toggle_maximize');});
+bar.querySelector('.close').addEventListener('click',function(){tauriInvoke('plugin:window|close');});
 })()
 "#;
 
@@ -599,9 +688,17 @@ pub fn run() {
                         .min_inner_size(600.0, 400.0)
                         .center()
                         .resizable(true)
+                        .decorations(cfg!(target_os = "macos"))
                         .disable_drag_drop_handler()
                         .on_document_title_changed(|wv, title| {
                             let _ = wv.set_title(&title);
+                            if !cfg!(target_os = "macos") {
+                                let escaped = js_escape(&title);
+                                let _ = wv.eval(&format!(
+                                    r#"(function(){{var t=document.getElementById('__yao_titlebar_text');if(t)t.textContent="{}";}})()"#,
+                                    escaped
+                                ));
+                            }
                         })
                         .on_new_window(move |url, _features| {
                             let url_str = url.to_string();
@@ -647,12 +744,15 @@ pub fn run() {
                                 let m = POPUP_COUNTER.fetch_add(1, Ordering::SeqCst);
                                 let lbl = format!("popup_{}", m);
                                 let h_dl2 = h.clone();
+                                let h_tb = h.clone();
+                                let nested_lbl = lbl.clone();
                                 let _ = WebviewWindowBuilder::new(&h, &lbl, WebviewUrl::External(p))
                                     .title("Yao Agents")
                                     .inner_size(1100.0, 780.0)
                                     .min_inner_size(600.0, 400.0)
                                     .center()
                                     .resizable(true)
+                                    .decorations(cfg!(target_os = "macos"))
                                     .on_download(move |wv, event| {
                                         match event {
                                             DownloadEvent::Requested { url, destination } => {
@@ -704,6 +804,12 @@ pub fn run() {
                                         true
                                     })
                                     .build();
+                                // Inject custom title bar into nested popup (non-macOS only)
+                                if !cfg!(target_os = "macos") {
+                                    if let Some(win) = h_tb.get_webview_window(&nested_lbl) {
+                                        let _ = win.eval(CUSTOM_TITLEBAR_JS);
+                                    }
+                                }
                             });
 
                             NewWindowResponse::Deny
@@ -760,7 +866,12 @@ pub fn run() {
                         })
                         .build()
                         {
-                            Ok(_) => info!("Popup window created: {}", label),
+                            Ok(win) => {
+                                info!("Popup window created: {}", label);
+                                if !cfg!(target_os = "macos") {
+                                    let _ = win.eval(CUSTOM_TITLEBAR_JS);
+                                }
+                            }
                             Err(e) => warn!("Failed to create popup window: {}", e),
                         }
                     });
@@ -819,6 +930,9 @@ pub fn run() {
                     true
                 })
                 .build()?;
+
+            #[cfg(target_os = "macos")]
+            center_macos_title(&window);
 
             // ── Version change cache clear ──
             // After upgrade, clear WebView browsing data to avoid stale cache.
@@ -898,6 +1012,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_conf,
             commands::check_server,
+            commands::fetch_cloud_servers,
             commands::start_proxy,
             commands::get_proxy_status,
             commands::update_proxy_token,
@@ -906,6 +1021,7 @@ pub fn run() {
             commands::set_window_theme,
             commands::set_ui_language,
             commands::sync_preferences,
+            commands::navigate_to_servers,
             commands::open_updater_window,
         ])
         .run(tauri::generate_context!())
@@ -942,6 +1058,16 @@ fn build_tray_menu<R: tauri::Runtime>(app: &impl Manager<R>) -> Result<Menu<R>, 
     Ok(Menu::with_items(app, &[&show, &servers, &settings, &check_update, &quit])?)
 }
 
+/// Return the root URL for the shell UI — dev server in debug builds,
+/// bundled assets in release builds.
+fn shell_ui_url() -> url::Url {
+    if cfg!(debug_assertions) {
+        "http://localhost:1420".parse().unwrap()
+    } else {
+        "tauri://localhost".parse().unwrap()
+    }
+}
+
 /// When the window is restored from tray, check if it's showing a stale proxy page.
 /// If the proxy isn't running but the webview URL points to it, navigate back to the shell UI.
 fn restore_if_stale(win: &tauri::WebviewWindow) {
@@ -953,7 +1079,7 @@ fn restore_if_stale(win: &tauri::WebviewWindow) {
             let state = config::get_proxy_state();
             if !state.running {
                 info!("Proxy not running, navigating back to shell UI");
-                let _ = win.navigate("tauri://localhost".parse().unwrap());
+                let _ = win.navigate(shell_ui_url());
             }
         }
     }
@@ -993,9 +1119,9 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 "servers" => {
                     let handle = app.clone();
                     if let Some(win) = handle.get_webview_window("main") {
-                        let _ = win.show();
-                        let _ = win.set_focus();
                         let state = config::get_proxy_state();
+                        let mut switch_url = shell_ui_url();
+                        switch_url.set_query(Some("switch=1"));
                         if state.running {
                             use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
                             let msg = config::tray_label("switch_confirm");
@@ -1006,13 +1132,18 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                                 .buttons(MessageDialogButtons::OkCancel)
                                 .show(move |confirmed| {
                                     if confirmed {
+                                        config::reset_proxy_session();
                                         if let Some(w) = handle.get_webview_window("main") {
-                                            let _ = w.navigate("tauri://localhost".parse().unwrap());
+                                            let _ = w.navigate(switch_url);
+                                            let _ = w.show();
+                                            let _ = w.set_focus();
                                         }
                                     }
                                 });
                         } else {
-                            let _ = win.navigate("tauri://localhost".parse().unwrap());
+                            let _ = win.navigate(switch_url);
+                            let _ = win.show();
+                            let _ = win.set_focus();
                         }
                     }
                 }

@@ -41,6 +41,15 @@ export interface ProxyStatus {
   auth_mode: string;
 }
 
+export interface CloudServerInfo {
+  name: string;
+  slug: string;
+  url: string;
+  region?: string;
+  status?: string;
+  contact_email?: string;
+}
+
 /** Get developer app config (config.json) */
 export async function getAppConf(): Promise<AppConf> {
   return invoke<AppConf>("get_app_conf");
@@ -49,6 +58,11 @@ export async function getAppConf(): Promise<AppConf> {
 /** Check remote server availability */
 export async function checkServer(serverUrl: string): Promise<WellKnownInfo> {
   return invoke<WellKnownInfo>("check_server", { serverUrl });
+}
+
+/** Fetch the cloud server list from the Yao Cloud portal */
+export async function fetchCloudServers(cloudBase: string, locale: string): Promise<CloudServerInfo[]> {
+  return invoke<CloudServerInfo[]>("fetch_cloud_servers", { cloudBase, locale });
 }
 
 /** Start the local proxy server */

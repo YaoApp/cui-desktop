@@ -348,6 +348,19 @@ pub fn clear_cookies() {
     save_cookies();
 }
 
+/// Reset the proxy session: clear cookies and all connection-specific state.
+/// The axum server keeps its port; clearing server_url causes proxy_request
+/// to return 502 until the next start_proxy call refreshes the config.
+pub fn reset_proxy_session() {
+    clear_cookies();
+    let mut state = PROXY_STATE.write();
+    state.server_url.clear();
+    state.token.clear();
+    state.auth_mode.clear();
+    state.dashboard.clear();
+    state.webproxy_domain.clear();
+}
+
 /// Get the number of stored cookies
 pub fn cookie_count() -> usize {
     COOKIE_JAR.read().len()

@@ -81,6 +81,7 @@ html, body {
 
 /* ===== Server Selection Page ===== */
 .page-servers {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -99,7 +100,7 @@ html, body {
 
 .servers-brand {
   text-align: center;
-  margin-bottom: 36px;
+  margin-bottom: 24px;
 }
 
 .brand-logo {
@@ -116,6 +117,13 @@ html, body {
   letter-spacing: -0.3px;
 }
 
+.server-subtitle {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
 .brand-link {
   display: inline-block;
   margin-top: 4px;
@@ -129,56 +137,136 @@ html, body {
   color: var(--color-main);
 }
 
-/* ===== Server List ===== */
-.server-list {
+/* ===== Quick Settings (page top-right) ===== */
+.quick-settings {
+  position: absolute;
+  top: 24px;
+  right: 28px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--color-input-bg);
+  border-radius: 999px;
+  padding: 3px 4px;
+  z-index: 10;
+}
+
+.quick-settings-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-main);
+  padding: 4px 10px;
+  transition: background 0.15s;
+  line-height: 1;
+}
+
+.quick-settings-btn:hover {
+  background: var(--color-hover-bg);
+}
+
+.quick-settings-btn.theme-btn {
+  font-size: 14px;
+  font-weight: normal;
+  color: var(--color-text-muted);
+  padding: 4px 8px;
+}
+
+.quick-settings-btn.theme-btn svg {
+  display: block;
+}
+
+/* ===== Capsule Tabs ===== */
+.capsule-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--color-input-bg);
+  border-radius: 999px;
+  padding: 4px;
   margin-bottom: 20px;
 }
 
-.server-list-empty {
+.capsule-tab {
+  flex: 1;
   text-align: center;
-  padding: 36px 0;
-  color: var(--color-text-muted);
+  padding: 8px 0;
+  border-radius: 999px;
   font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  background: transparent;
+  border: none;
+  font-family: var(--font);
+  line-height: 1.4;
 }
 
-.server-item {
+.capsule-tab:hover {
+  color: var(--color-text);
+}
+
+.capsule-tab.active {
+  background: var(--color-main);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ===== Tab Content (fixed height to prevent layout jumps) ===== */
+#tab-content {
+  min-height: 80px;
+}
+
+/* ===== Cloud Server Picker ===== */
+.cloud-picker-wrap {
+  position: relative;
+  margin-bottom: 4px;
+}
+
+.cloud-picker {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
+  width: 100%;
   padding: 14px 16px;
   background: var(--color-input-bg);
   border: 1.5px solid transparent;
   border-radius: var(--radius);
-  margin-bottom: 8px;
-  transition: all 0.2s;
+  cursor: pointer;
+  transition: border-color 0.2s;
 }
 
-.server-item:hover {
+.cloud-picker:hover {
   border-color: var(--color-main);
 }
 
-.server-item.active {
-  border-color: var(--color-main);
-  background: rgba(51, 115, 252, 0.06);
+.cloud-picker-info {
+  flex: 1;
+  min-width: 0;
 }
 
-[data-theme="dark"] .server-item.active {
-  background: rgba(51, 115, 252, 0.12);
-}
-
-.server-info { flex: 1; min-width: 0; }
-
-.server-name {
+.cloud-picker-name {
   font-size: 14px;
   font-weight: 500;
   color: var(--color-text);
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.server-url {
+.cloud-picker-name.placeholder {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.cloud-picker-url {
   font-size: 12px;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
@@ -188,23 +276,143 @@ html, body {
   margin-top: 2px;
 }
 
-.server-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.picker-arrow {
   flex-shrink: 0;
+  font-size: 16px;
+  color: var(--color-text-muted);
+  transition: transform 0.2s;
 }
 
-.badge-preset {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-size: 10px;
+.picker-arrow.open {
+  transform: rotate(180deg);
+}
+
+/* Cloud dropdown */
+.cloud-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--color-bg-nav);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.cloud-dropdown-item {
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.cloud-dropdown-item:hover {
+  background: var(--color-hover-bg);
+}
+
+.cloud-dropdown-item.selected {
+  background: rgba(51, 115, 252, 0.06);
+}
+
+[data-theme="dark"] .cloud-dropdown-item.selected {
+  background: rgba(51, 115, 252, 0.12);
+}
+
+.cloud-dropdown-name {
+  font-size: 14px;
   font-weight: 500;
-  background: var(--color-badge-bg);
+  color: var(--color-text);
+}
+
+.cloud-dropdown-group {
+  font-size: 12px;
   color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  margin-top: 2px;
+}
+
+/* Cloud states */
+.cloud-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.cloud-state .spinner {
+  width: 18px;
+  height: 18px;
+}
+
+.cloud-error {
+  text-align: center;
+  padding: 16px 0;
+}
+
+.cloud-error-text {
+  font-size: 13px;
+  color: var(--color-danger);
+  margin-bottom: 8px;
+}
+
+/* ===== Custom Server Input ===== */
+.custom-input {
+  width: 100%;
+  height: 50px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-family: var(--font);
+  color: var(--color-text);
+  background: var(--color-input-bg);
+  border: 1.5px solid transparent;
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.custom-input:focus {
+  border-color: var(--color-main);
+}
+
+.custom-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.custom-hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 6px;
+  padding-left: 2px;
+}
+
+/* ===== Connect Section ===== */
+.connect-section {
+  margin-top: 20px;
+}
+
+/* ===== Invite Helper ===== */
+.invite-helper {
+  text-align: center;
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+.invite-helper a {
+  color: var(--color-main);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.invite-helper a:hover {
+  text-decoration-style: solid;
 }
 
 /* ===== Buttons (CUI-style) ===== */
@@ -312,49 +520,12 @@ html, body {
 
 .btn-danger-solid:hover { opacity: 0.85; }
 
-/* ===== Add Server Form ===== */
-.server-add-section {
-  margin-bottom: 16px;
-}
-
-#add-toggle {
-  text-align: center;
-}
-
-.add-form-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.add-form-fields input {
-  width: 100%;
-  height: 44px;
-  padding: 0 14px;
-  font-size: 13px;
-  font-family: var(--font);
-  color: var(--color-text);
-  background: var(--color-input-bg);
-  border: 1.5px solid transparent;
-  border-radius: var(--radius);
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.add-form-fields input:focus {
-  border-color: var(--color-main);
-}
-
-.add-form-fields input::placeholder {
-  color: var(--color-text-muted);
-}
+/* (Add Server Form removed — replaced by custom tab single input) */
 
 /* ===== Footer ===== */
 .servers-bottom {
   text-align: center;
   padding-top: 16px;
-  border-top: 1px solid var(--color-border);
 }
 
 .servers-bottom a {
@@ -527,46 +698,7 @@ html, body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ===== Preference Toolbar ===== */
-.pref-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding-top: 14px;
-}
-
-.pref-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-family: var(--font);
-  color: var(--color-text-muted);
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 0.2s, border-color 0.2s;
-  line-height: 1.4;
-}
-
-.pref-btn:hover {
-  color: var(--color-text-secondary);
-  border-color: var(--color-text-muted);
-}
-
-.pref-btn .pref-icon {
-  font-size: 14px;
-  line-height: 1;
-}
-
-.pref-sep {
-  width: 1px;
-  height: 14px;
-  background: var(--color-border);
-}
+/* (Preference Toolbar removed — replaced by quick-settings capsule) */
 
 /* ===== Updater Page ===== */
 .updater-container {
@@ -688,4 +820,30 @@ html, body {
   background: linear-gradient(90deg, var(--color-main), var(--color-main-end));
   border-radius: 3px;
   transition: width 0.3s ease;
+}
+
+/* ===== Modal / Confirm Dialog ===== */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: rgba(0,0,0,0.35);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-card {
+  background: var(--color-bg-nav);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 24px;
+  max-width: 380px;
+  width: 90%;
+}
+.confirm-dialog-body {
+  font-size: 14px;
+  color: var(--color-text);
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }

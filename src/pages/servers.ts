@@ -1,5 +1,5 @@
-import { getAppConf, checkServer, startProxy, type AppConf } from "../lib/api";
-import { getSettings, saveServer, removeServer, type ServerEntry } from "../lib/store";
+import { getAppConf, checkServer, startProxy, fetchCloudServers, type AppConf, type CloudServerInfo } from "../lib/api";
+import { getSettings, saveServer, type ServerEntry } from "../lib/store";
 import { navigate } from "../lib/router";
 import { t, getLang, setLang, getTheme, setTheme } from "../lib/i18n";
 import { normalizeServerUrl } from "../lib/url";
@@ -16,13 +16,30 @@ const DEFAULT_CONF: AppConf = {
 let _serversSyncCleanup: (() => void) | null = null;
 let _autoReconnectDone = false;
 
+// ---- Page state ----
+let _currentTab = 0; // 0 = cloud, 1 = custom
+let _cloudServers: CloudServerInfo[] = [];
+let _cloudSelectedUrl = "";
+let _cloudLoading = false;
+let _cloudError: string | null = null;
+let _customUrl = "";
+let _dropdownOpen = false;
+let _panelRendered = false;
+
 /** Render the server selection page */
 export async function renderServers(): Promise<void> {
   const app = document.getElementById("app")!;
 
   _serversSyncCleanup?.();
   const onTheme = () => renderServers();
-  const onLang = () => renderServers();
+  const onLang = () => {
+    // Only reload if not already loading (toggle-lang handler may have started it)
+    if (!_cloudLoading) {
+      _cloudServers = [];
+      _cloudError = null;
+      loadCloudServers().then(() => renderServers());
+    }
+  };
   window.addEventListener("cui:theme-sync", onTheme);
   window.addEventListener("cui:lang-sync", onLang);
   _serversSyncCleanup = () => {
@@ -44,37 +61,35 @@ export async function renderServers(): Promise<void> {
     // Store not initialized yet
   }
 
-
-  // Merge config presets + user servers
-  const allServers = mergeServers(settings.servers, conf.servers);
+  // "Switch server" from tray menu passes ?switch=1 — skip auto-reconnect
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has("switch")) {
+    _autoReconnectDone = true;
+    window.history.replaceState({}, "", window.location.pathname);
+  }
 
   // One-shot auto-reconnect: on first render, if there was an active server, reconnect
   if (!_autoReconnectDone && settings.activeServerUrl) {
     _autoReconnectDone = true;
-    const server = allServers.find(s => s.url === settings.activeServerUrl);
-    if (server) {
-      app.innerHTML = `
-        <div class="page-servers">
-          <div class="servers-panel fade-in" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:320px">
-            <div class="spinner spinner-dark spinner-lg"></div>
-            <p style="margin-top:16px;color:#6b7280;font-size:14px">${escapeHtml(t("app.connecting"))} ${escapeHtml(server.label || server.url)}</p>
-          </div>
+    app.innerHTML = `
+      <div class="page-servers">
+        <div class="servers-panel fade-in" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:320px">
+          <div class="spinner spinner-dark spinner-lg"></div>
+          <p style="margin-top:16px;color:#6b7280;font-size:14px">${escapeHtml(t("app.connecting"))} ${escapeHtml(settings.activeServerUrl)}</p>
         </div>
-      `;
-      try {
-        let dashboard = "";
-        let webproxyDomain = "";
-        try {
-          const info = await checkServer(server.url);
-          if (info.dashboard) dashboard = info.dashboard;
-          if (info.webproxy?.domain) webproxyDomain = info.webproxy.domain;
-        } catch { /* older server, proceed without dashboard info */ }
-        await startProxy(server.url, "", "openapi", dashboard, webproxyDomain);
-        navigate("/app");
-        return;
-      } catch {
-        // Auto-reconnect failed, fall through to render full servers page
-      }
+      </div>
+    `;
+    try {
+      let dashboard = "";
+      let webproxyDomain = "";
+      const info = await checkServer(settings.activeServerUrl);
+      if (info.dashboard) dashboard = info.dashboard;
+      if (info.webproxy?.domain) webproxyDomain = info.webproxy.domain;
+      await startProxy(settings.activeServerUrl, "", "openapi", dashboard, webproxyDomain);
+      navigate("/app");
+      return;
+    } catch {
+      // Server unreachable, fall through to render server selection page
     }
   }
 
@@ -82,57 +97,63 @@ export async function renderServers(): Promise<void> {
   const primary = conf.theme?.primaryColor || "#3373fc";
   document.documentElement.style.setProperty("--color-main", primary);
 
-  // Logo: use config.logo if set, otherwise default Yao icon
+  // Load cloud servers on first render (non-blocking)
+  if (_cloudServers.length === 0 && !_cloudLoading && !_cloudError) {
+    loadCloudServers().then(() => {
+      // After loading, determine tab for saved URL
+      if (settings.activeServerUrl) {
+        const isCloud = _cloudServers.some(s => s.url.replace(/\/$/, "") === settings.activeServerUrl.replace(/\/$/, ""));
+        if (isCloud) {
+          _currentTab = 0;
+          _cloudSelectedUrl = settings.activeServerUrl;
+        } else {
+          _currentTab = 1;
+          _customUrl = settings.activeServerUrl;
+        }
+      }
+      renderServers();
+    });
+  }
+
   const logoSrc = conf.logo || "/icon.png";
+  const langLabel = getLang() === "zh" ? "EN" : "中";
+  const themeIcon = getTheme() === "dark"
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+
+  const panelClass = _panelRendered ? "servers-panel" : "servers-panel fade-in";
+  _panelRendered = true;
 
   app.innerHTML = `
     <div class="page-servers">
-      <div class="servers-panel fade-in">
+      <div class="quick-settings" id="quick-settings">
+        <button class="quick-settings-btn" id="toggle-lang">${langLabel}</button>
+        <button class="quick-settings-btn theme-btn" id="toggle-theme">${themeIcon}</button>
+      </div>
+      <div class="${panelClass}">
         <div class="servers-brand">
           <img src="${esc(logoSrc)}" alt="" class="brand-logo" />
           <h1 class="brand-name">${escapeHtml(conf.name)}</h1>
-          <a class="brand-link" href="https://yaoagents.com" target="_blank">yaoagents.com</a>
+          <span class="server-subtitle">${escapeHtml(t("app.server_subtitle"))}</span>
         </div>
 
         <div id="alert-area"></div>
 
-        <div class="server-list" id="server-list">
-          ${allServers.length > 0
-            ? allServers.map(s => serverItem(s, settings.activeServerUrl)).join("")
-            : `<div class="server-list-empty">${escapeHtml(t("app.no_servers"))}</div>`
-          }
+        <div class="capsule-tabs">
+          <button class="capsule-tab${_currentTab === 0 ? " active" : ""}" data-tab="0">${escapeHtml(t("app.cloud_section"))}</button>
+          <button class="capsule-tab${_currentTab === 1 ? " active" : ""}" data-tab="1">${escapeHtml(t("app.custom_section"))}</button>
         </div>
 
-        <div class="server-add-section">
-          <div id="add-toggle">
-            <button class="btn-text" id="show-add-btn">${escapeHtml(t("app.add_server"))}</button>
-          </div>
-          <div id="add-form" style="display:none">
-            <div class="add-form-fields">
-              <input type="text" id="add-url" placeholder="${esc(t("app.server_url_placeholder"))}" />
-              <input type="text" id="add-label" placeholder="${esc(t("app.server_name_placeholder"))}" />
-            </div>
-            <div class="add-form-actions">
-              <button class="btn-main btn-sm" id="add-ok">${escapeHtml(t("app.add"))}</button>
-              <button class="btn-ghost btn-sm" id="add-cancel">${escapeHtml(t("app.cancel"))}</button>
-            </div>
-          </div>
+        <div id="tab-content">
+          ${_currentTab === 0 ? renderCloudTab() : renderCustomTab()}
         </div>
 
-        <div class="servers-bottom">
-          <a href="#" id="goto-settings">${escapeHtml(t("app.settings"))}</a>
-          <div class="pref-toolbar">
-            <button class="pref-btn" id="toggle-theme" title="Toggle theme">
-              <span class="pref-icon">${getTheme() === "dark" ? "☀️" : "🌙"}</span>
-              <span>${getTheme() === "dark" ? "Light" : "Dark"}</span>
-            </button>
-            <span class="pref-sep"></span>
-            <button class="pref-btn" id="toggle-lang" title="Switch language">
-              <span class="pref-icon">🌐</span>
-              <span>${getLang() === "zh" ? "English" : "中文"}</span>
-            </button>
-          </div>
+        <div class="connect-section">
+          <button class="btn-main btn-lg" id="connect-btn" ${isConnectEnabled() ? "" : "disabled"}>${escapeHtml(t("app.connect"))}</button>
         </div>
+
+        ${_currentTab === 0 ? renderInviteHelper() : ""}
+
       </div>
     </div>
   `;
@@ -140,111 +161,228 @@ export async function renderServers(): Promise<void> {
   bind(conf);
 }
 
-function serverItem(s: MergedServer, activeUrl: string): string {
-  const active = s.url === activeUrl ? " active" : "";
-  const badge = s.source === "config" ? `<span class="badge-preset">${escapeHtml(t("app.default"))}</span>` : "";
-  const actionBtn = `<button class="btn-main btn-sm connect-btn" data-url="${esc(s.url)}" data-label="${esc(s.label)}">${escapeHtml(t("app.connect"))}</button>`;
+// ---- Tab renderers ----
+
+function renderCloudTab(): string {
+  if (_cloudLoading) {
+    return `<div class="cloud-state"><div class="spinner"></div><span>${escapeHtml(t("app.cloud_loading"))}</span></div>`;
+  }
+  if (_cloudError) {
+    return `
+      <div class="cloud-error">
+        <div class="cloud-error-text">${escapeHtml(t("app.cloud_load_failed"))}</div>
+        <button class="btn-text" id="cloud-retry">${escapeHtml(t("app.cloud_retry"))}</button>
+      </div>`;
+  }
+  if (_cloudServers.length === 0) {
+    return `<div class="cloud-state"><span>${escapeHtml(t("app.cloud_empty"))}</span></div>`;
+  }
+
+  const selected = _cloudServers.find(s => s.url === _cloudSelectedUrl);
+  const nameHtml = selected
+    ? `<div class="cloud-picker-name">${escapeHtml(selected.name)}</div>
+       <div class="cloud-picker-url">${escapeHtml(selected.url)}</div>`
+    : `<div class="cloud-picker-name placeholder">${escapeHtml(t("app.cloud_select_hint"))}</div>`;
+
+  let dropdownHtml = "";
+  if (_dropdownOpen) {
+    const items = _cloudServers.map(s => {
+      const sel = s.url === _cloudSelectedUrl ? " selected" : "";
+      const group = [s.region, s.url].filter(Boolean).join(" · ");
+      return `<div class="cloud-dropdown-item${sel}" data-cloud-url="${esc(s.url)}">
+        <div class="cloud-dropdown-name">${escapeHtml(s.name)}</div>
+        <div class="cloud-dropdown-group">${escapeHtml(group)}</div>
+      </div>`;
+    }).join("");
+    dropdownHtml = `<div class="cloud-dropdown">${items}</div>`;
+  }
 
   return `
-    <div class="server-item${active}">
-      <div class="server-info">
-        <div class="server-name">${escapeHtml(s.label || s.url)} ${badge}</div>
-        <div class="server-url">${escapeHtml(s.url)}</div>
+    <div class="cloud-picker-wrap">
+      <div class="cloud-picker" id="cloud-picker">
+        <div class="cloud-picker-info">${nameHtml}</div>
+        <span class="picker-arrow${_dropdownOpen ? " open" : ""}">▾</span>
       </div>
-      <div class="server-actions">
-        ${actionBtn}
-        ${s.source === "user" ? `<button class="btn-icon remove-btn" data-url="${esc(s.url)}" title="${esc(t("app.remove"))}">&times;</button>` : ""}
-      </div>
-    </div>
-  `;
+      ${dropdownHtml}
+    </div>`;
 }
 
-function bind(conf: AppConf) {
+function renderCustomTab(): string {
+  return `
+    <div>
+      <input type="text" class="custom-input" id="custom-url"
+        placeholder="https://your-server.com"
+        value="${esc(_customUrl)}" />
+      <div class="custom-hint">${escapeHtml(t("app.custom_full_hint"))}</div>
+    </div>`;
+}
+
+function renderInviteHelper(): string {
+  const isZh = getLang() === "zh";
+  const registerUrl = isZh ? "https://yaoagents.cn/servers" : "https://yaoagents.com/servers";
+  return `
+    <div class="invite-helper">
+      <div>${escapeHtml(t("app.register_helper"))}</div>
+      <a href="${esc(registerUrl)}" target="_blank">${escapeHtml(t("app.register_link"))}</a>
+    </div>`;
+}
+
+function isConnectEnabled(): boolean {
+  if (_currentTab === 0) return !!_cloudSelectedUrl;
+  return !!_customUrl.trim();
+}
+
+function effectiveUrl(): string {
+  if (_currentTab === 0) return _cloudSelectedUrl;
+  return _customUrl.trim();
+}
+
+function effectiveLabel(): string {
+  if (_currentTab === 0) {
+    const s = _cloudServers.find(s => s.url === _cloudSelectedUrl);
+    return s?.name || _cloudSelectedUrl;
+  }
+  return _customUrl.trim().replace(/^https?:\/\//, "");
+}
+
+// ---- Cloud server loading ----
+
+async function loadCloudServers(): Promise<void> {
+  if (_cloudLoading) return;
+  _cloudLoading = true;
+  _cloudError = null;
+
+  const lang = getLang();
+  const cloudBase = lang === "zh" ? "https://yaoagents.cn" : "https://yaoagents.com";
+  const locale = lang === "zh" ? "zh-cn" : "en-US";
+
+  try {
+    const list = await fetchCloudServers(cloudBase, locale);
+    _cloudServers = list;
+    _cloudLoading = false;
+    if (!_cloudSelectedUrl && list.length > 0) {
+      _cloudSelectedUrl = list[0].url;
+    }
+  } catch (e: any) {
+    _cloudLoading = false;
+    _cloudError = typeof e === "string" ? e : e?.message ?? "Unknown error";
+  }
+}
+
+// ---- Event binding ----
+
+function bind(_conf: AppConf) {
   const alertArea = document.getElementById("alert-area")!;
 
-  // Connect
-  document.querySelectorAll(".connect-btn").forEach(btn => {
+  // Tab switching
+  document.querySelectorAll(".capsule-tab").forEach(btn => {
     btn.addEventListener("click", () => {
-      const el = btn as HTMLElement;
-      doConnect(el.dataset.url!, el.dataset.label || "", alertArea);
+      const tab = parseInt((btn as HTMLElement).dataset.tab || "0", 10);
+      if (tab !== _currentTab) {
+        _currentTab = tab;
+        _dropdownOpen = false;
+        renderServers();
+      }
     });
   });
 
-  // Remove
-  document.querySelectorAll(".remove-btn").forEach(btn => {
-    btn.addEventListener("click", async (e) => {
+  // Cloud picker toggle
+  document.getElementById("cloud-picker")?.addEventListener("click", () => {
+    _dropdownOpen = !_dropdownOpen;
+    renderServers();
+  });
+
+  // Cloud dropdown item selection
+  document.querySelectorAll(".cloud-dropdown-item").forEach(item => {
+    item.addEventListener("click", (e) => {
       e.stopPropagation();
-      await removeServer((btn as HTMLElement).dataset.url!);
+      _cloudSelectedUrl = (item as HTMLElement).dataset.cloudUrl || "";
+      _dropdownOpen = false;
       renderServers();
     });
   });
 
-  // Add toggle
-  document.getElementById("show-add-btn")!.addEventListener("click", () => {
-    document.getElementById("add-toggle")!.style.display = "none";
-    document.getElementById("add-form")!.style.display = "block";
-    (document.getElementById("add-url") as HTMLInputElement).focus();
+  // Close dropdown on outside click (delayed to avoid consuming the opening click)
+  if (_dropdownOpen) {
+    requestAnimationFrame(() => {
+      const handler = (e: MouseEvent) => {
+        const wrap = document.querySelector(".cloud-picker-wrap");
+        if (wrap && !wrap.contains(e.target as Node)) {
+          _dropdownOpen = false;
+          renderServers();
+        }
+        document.removeEventListener("click", handler, true);
+      };
+      document.addEventListener("click", handler, true);
+    });
+  }
+
+  // Cloud retry
+  document.getElementById("cloud-retry")?.addEventListener("click", () => {
+    loadCloudServers().then(() => renderServers());
   });
 
-  document.getElementById("add-cancel")!.addEventListener("click", () => {
-    document.getElementById("add-toggle")!.style.display = "block";
-    document.getElementById("add-form")!.style.display = "none";
-  });
+  // Custom URL input
+  const customInput = document.getElementById("custom-url") as HTMLInputElement | null;
+  if (customInput) {
+    customInput.addEventListener("input", () => {
+      _customUrl = customInput.value;
+      const connectBtn = document.getElementById("connect-btn") as HTMLButtonElement | null;
+      if (connectBtn) connectBtn.disabled = !isConnectEnabled();
+    });
+    customInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && isConnectEnabled()) {
+        const normalized = normalizeServerUrl(effectiveUrl()) || effectiveUrl();
+        doConnect(normalized, effectiveLabel(), alertArea);
+      }
+    });
+  }
 
-  document.getElementById("add-ok")!.addEventListener("click", async () => {
-    const raw = (document.getElementById("add-url") as HTMLInputElement).value.trim();
-    if (!raw) { showAlert(alertArea, "error", t("app.enter_url")); return; }
-    const url = normalizeServerUrl(raw);
-    const label = (document.getElementById("add-label") as HTMLInputElement).value.trim() || url.replace(/^https?:\/\//, "");
-    await saveServer({ url, label, lastConnected: 0 });
-    renderServers();
-  });
-
-  // Auto-correct URL on blur (only when input looks like a URL)
-  document.getElementById("add-url")!.addEventListener("blur", (e) => {
-    const input = e.target as HTMLInputElement;
-    const val = input.value.trim();
-    if (!val || (!val.includes(".") && !val.includes(":"))) return;
-    const normalized = normalizeServerUrl(val);
-    if (normalized && normalized !== val) {
-      input.value = normalized;
+  // Connect button
+  document.getElementById("connect-btn")?.addEventListener("click", () => {
+    if (!isConnectEnabled()) return;
+    if (_currentTab === 0) {
+      doConnect(effectiveUrl(), effectiveLabel(), alertArea, true);
+    } else {
+      doConnect(normalizeServerUrl(effectiveUrl()) || effectiveUrl(), effectiveLabel(), alertArea);
     }
   });
 
-  // Settings
-  document.getElementById("goto-settings")!.addEventListener("click", (e) => {
-    e.preventDefault();
-    navigate("/settings");
-  });
 
   // Theme toggle
-  document.getElementById("toggle-theme")!.addEventListener("click", () => {
+  document.getElementById("toggle-theme")?.addEventListener("click", () => {
     setTheme(getTheme() === "dark" ? "light" : "dark");
-    renderServers(); // re-render to update button label
+    renderServers();
   });
 
-  // Language toggle
-  document.getElementById("toggle-lang")!.addEventListener("click", () => {
-    setLang(getLang() === "zh" ? "en" : "zh");
-    renderServers(); // re-render with new language
+  // Language toggle — reset cloud cache, set lang, then reload directly.
+  // setLang also dispatches cui:lang-sync asynchronously via Rust; we guard
+  // against double-loading with the _cloudLoading flag in loadCloudServers().
+  document.getElementById("toggle-lang")?.addEventListener("click", () => {
+    const newLang = getLang() === "zh" ? "en" : "zh";
+    _cloudServers = [];
+    _cloudLoading = false;
+    _cloudError = null;
+    setLang(newLang);
+    loadCloudServers().then(() => renderServers());
   });
 }
 
-async function doConnect(rawUrl: string, label: string, alertArea: HTMLElement) {
-  const url = normalizeServerUrl(rawUrl) || rawUrl;
-  document.querySelectorAll(".connect-btn").forEach(b => (b as HTMLButtonElement).disabled = true);
+async function doConnect(rawUrl: string, label: string, alertArea: HTMLElement, skipNormalize = false) {
+  const url = skipNormalize ? rawUrl : (normalizeServerUrl(rawUrl) || rawUrl);
+  const connectBtn = document.getElementById("connect-btn") as HTMLButtonElement | null;
+  if (connectBtn) connectBtn.disabled = true;
   showAlert(alertArea, "info", t("app.connecting"));
 
   try {
     let name = label || url.replace(/^https?:\/\//, "");
     let dashboard = "";
     let webproxyDomain = "";
-    try {
-      const info = await checkServer(url);
-      if (info.name) name = info.name;
-      if (info.dashboard) dashboard = info.dashboard;
-      if (info.webproxy?.domain) webproxyDomain = info.webproxy.domain;
-    } catch { /* older server */ }
+
+    const info = await checkServer(url);
+    if (info.name) name = info.name;
+    if (info.dashboard) dashboard = info.dashboard;
+    if (info.webproxy?.domain) webproxyDomain = info.webproxy.domain;
 
     await saveServer({ url, label: name, lastConnected: Date.now() });
 
@@ -256,20 +394,11 @@ async function doConnect(rawUrl: string, label: string, alertArea: HTMLElement) 
   } catch (err: any) {
     showAlert(alertArea, "error", `${t("app.connection_failed")}${typeof err === "string" ? err : err?.message ?? String(err)}`);
   } finally {
-    document.querySelectorAll(".connect-btn").forEach(b => (b as HTMLButtonElement).disabled = false);
+    if (connectBtn) connectBtn.disabled = !isConnectEnabled();
   }
 }
 
-// ---- helpers ----
-
-interface MergedServer { url: string; label: string; lastConnected: number; source: "user" | "config" }
-
-function mergeServers(user: ServerEntry[], preset: AppConf["servers"]): MergedServer[] {
-  const map = new Map<string, MergedServer>();
-  for (const s of preset) map.set(s.url, { url: s.url, label: s.label, lastConnected: 0, source: "config" });
-  for (const s of user)   map.set(s.url, { url: s.url, label: s.label, lastConnected: s.lastConnected, source: "user" });
-  return Array.from(map.values()).sort((a, b) => (b.lastConnected || 0) - (a.lastConnected || 0));
-}
+// ---- Helpers ----
 
 function showAlert(el: HTMLElement, type: "error" | "success" | "info", msg: string) {
   el.innerHTML = `<div class="alert alert-${type}">${escapeHtml(msg)}</div>`;
