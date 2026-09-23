@@ -86,7 +86,7 @@ jobs:
       # ── Build Desktop App ──
 
       - name: Install frontend dependencies
-        run: npm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Patch version and updater config
         env:
