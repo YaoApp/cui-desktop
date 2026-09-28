@@ -12,7 +12,8 @@
  *   - `version.json` 的 `version` = **最新稳定版基线**（与最新稳定 tag `vX.Y.Z` 一致）。
  *   - `next`    = 依据 `v<base>..HEAD` 的 Conventional Commits 计算下一个稳定版
  *                 （BREAKING/! → major；含 feat → minor；其余 → patch）。
- *   - `nightly` = `<next>-nightly.<YYYYMMDD>`（SemVer 预发布，不污染稳定号）。
+ *   - `nightly` = `<base>-nightly.<YYYYMMDD>`（SemVer 预发布；**与 version.json 完全一致**，
+ *                 不随提交自动升位 —— 升位是稳定发版时的动作）。
  *
  * 用法：
  *   node scripts/version.mjs current                 # 打印共享 version.json 的版本
@@ -75,16 +76,34 @@ function bump(v, level) {
 	return `${s.major}.${s.minor}.${s.patch + 1}`
 }
 
-/** 依据 base..HEAD 的提交推断升位级别 */
+/** 解析提交范围起点：优先 `v<base>`；若该 tag 不存在（version.json 已提前 bump），退回最近的可达 tag */
+function rangeFrom(base) {
+	const tag = `v${base}`
+	try {
+		git(['rev-parse', '--verify', '--quiet', `${tag}^{commit}`])
+		return tag
+	} catch {
+		try {
+			return git(['describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*'])
+		} catch {
+			return null
+		}
+	}
+}
+
+/** 依据 from..HEAD 的提交推断升位级别 */
 function analyze(base) {
+	const from = rangeFrom(base)
+	if (!from) return { level: 'patch', commits: 0, base }
+	const range = `${from}..HEAD`
 	let subjects = []
 	let bodies = ''
 	try {
-		subjects = git(['log', '--no-merges', '--pretty=format:%s', `v${base}..HEAD`])
+		subjects = git(['log', '--no-merges', '--pretty=format:%s', range])
 			.split('\n')
 			.map((s) => s.trim())
 			.filter(Boolean)
-		bodies = git(['log', '--no-merges', '--pretty=format:%B', `v${base}..HEAD`])
+		bodies = git(['log', '--no-merges', '--pretty=format:%B', range])
 	} catch {
 		return { level: 'patch', commits: 0, base }
 	}
@@ -118,9 +137,9 @@ if (cmd === 'current') {
 	if (has('--json')) console.log(JSON.stringify({ version, level, commits, base }))
 	else console.log(version)
 } else if (cmd === 'nightly') {
+	// 约定：nightly = <base>-nightly.<date>，base 直接取自共享 version.json（不做自动升位）。
 	const base = val('--base', readVersion())
-	const { level } = analyze(base)
-	const version = `${bump(base, level)}-nightly.${today(val('--date'))}`
+	const version = `${base}-nightly.${today(val('--date'))}`
 	console.log(version)
 } else if (cmd === 'bump') {
 	const base = readVersion()
