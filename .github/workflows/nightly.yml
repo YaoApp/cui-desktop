@@ -47,6 +47,11 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Fetch cui version file
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/YaoApp/cui/main/version.json" -o /tmp/cui-version.json
+          echo "CUI_VERSION_FILE=/tmp/cui-version.json" >> "$GITHUB_ENV"
+
       - name: Detect changes and compute version
         id: detect
         env:
