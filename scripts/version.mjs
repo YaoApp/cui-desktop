@@ -3,8 +3,9 @@
  * 版本助手（cui-desktop）
  *
  * 版本来源：**单一来源为 cui 仓库根目录的 `version.json`**。
- *   - 默认路径：`<cui-desktop>/../cui/version.json`（同级 cui checkout，由 scripts/pull-cui.sh 拉取）。
- *   - 可用环境变量 `CUI_VERSION_FILE` 覆盖（CI 里从 cui main 直接下载到临时文件）。
+ *   - 路径优先级：`CUI_VERSION_FILE` 环境变量 > `<cui-desktop>/cui/version.json`
+ *     （`scripts/pull-cui.sh` 的 checkout）> `<cui-desktop>/../cui/version.json`（同级 checkout）。
+ *   - CI 里 `CUI_VERSION_FILE` 指向从 cui main 下载的临时文件。
  *   - cui-desktop 不再保留本地 version.json；`bump` 会写回上面解析到的同一个文件。
  *
  * 版本模型：
