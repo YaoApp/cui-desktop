@@ -75,16 +75,34 @@ function bump(v, level) {
 	return `${s.major}.${s.minor}.${s.patch + 1}`
 }
 
-/** 依据 base..HEAD 的提交推断升位级别 */
+/** 解析提交范围起点：优先 `v<base>`；若该 tag 不存在（version.json 已提前 bump），退回最近的可达 tag */
+function rangeFrom(base) {
+	const tag = `v${base}`
+	try {
+		git(['rev-parse', '--verify', '--quiet', `${tag}^{commit}`])
+		return tag
+	} catch {
+		try {
+			return git(['describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*'])
+		} catch {
+			return null
+		}
+	}
+}
+
+/** 依据 from..HEAD 的提交推断升位级别 */
 function analyze(base) {
+	const from = rangeFrom(base)
+	if (!from) return { level: 'patch', commits: 0, base }
+	const range = `${from}..HEAD`
 	let subjects = []
 	let bodies = ''
 	try {
-		subjects = git(['log', '--no-merges', '--pretty=format:%s', `v${base}..HEAD`])
+		subjects = git(['log', '--no-merges', '--pretty=format:%s', range])
 			.split('\n')
 			.map((s) => s.trim())
 			.filter(Boolean)
-		bodies = git(['log', '--no-merges', '--pretty=format:%B', `v${base}..HEAD`])
+		bodies = git(['log', '--no-merges', '--pretty=format:%B', range])
 	} catch {
 		return { level: 'patch', commits: 0, base }
 	}
