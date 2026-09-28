@@ -12,7 +12,8 @@
  *   - `version.json` 的 `version` = **最新稳定版基线**（与最新稳定 tag `vX.Y.Z` 一致）。
  *   - `next`    = 依据 `v<base>..HEAD` 的 Conventional Commits 计算下一个稳定版
  *                 （BREAKING/! → major；含 feat → minor；其余 → patch）。
- *   - `nightly` = `<next>-nightly.<YYYYMMDD>`（SemVer 预发布，不污染稳定号）。
+ *   - `nightly` = `<base>-nightly.<YYYYMMDD>`（SemVer 预发布；**与 version.json 完全一致**，
+ *                 不随提交自动升位 —— 升位是稳定发版时的动作）。
  *
  * 用法：
  *   node scripts/version.mjs current                 # 打印共享 version.json 的版本
@@ -136,9 +137,9 @@ if (cmd === 'current') {
 	if (has('--json')) console.log(JSON.stringify({ version, level, commits, base }))
 	else console.log(version)
 } else if (cmd === 'nightly') {
+	// 约定：nightly = <base>-nightly.<date>，base 直接取自共享 version.json（不做自动升位）。
 	const base = val('--base', readVersion())
-	const { level } = analyze(base)
-	const version = `${bump(base, level)}-nightly.${today(val('--date'))}`
+	const version = `${base}-nightly.${today(val('--date'))}`
 	console.log(version)
 } else if (cmd === 'bump') {
 	const base = readVersion()
