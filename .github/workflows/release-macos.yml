@@ -18,6 +18,10 @@ on:
         type: string
         required: false
         default: "cdn"
+      cui_ref:
+        type: string
+        required: false
+        default: "main"
   workflow_dispatch:
     inputs:
       version:
@@ -35,6 +39,10 @@ on:
         description: "cdn (stable) or github (nightly)"
         required: false
         default: "cdn"
+      cui_ref:
+        description: "CUI git ref to build (tag/branch/sha). Stable pins v<version>."
+        required: false
+        default: "main"
 
 permissions:
   contents: write
@@ -102,6 +110,8 @@ jobs:
       # ── Build CUI ──
 
       - name: Pull CUI source
+        env:
+          CUI_REF: ${{ inputs.cui_ref }}
         run: bash scripts/pull-cui.sh
 
       - name: Build CUI

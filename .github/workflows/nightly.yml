@@ -48,8 +48,15 @@ jobs:
           node-version: "20"
 
       - name: Fetch cui version file
+        env:
+          CUI_TOKEN: ${{ secrets.CUI_GITHUB_TOKEN_WRITE }}
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/YaoApp/cui/main/version.json" -o /tmp/cui-version.json
+          # 用 API 读取（raw.githubusercontent.com 有 CDN 缓存，可能读到旧版本）
+          curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main" \
+            | python3 -c 'import sys,json,base64;print(base64.b64decode(json.load(sys.stdin)["content"]).decode(), end="")' \
+            > /tmp/cui-version.json
+          cat /tmp/cui-version.json
           echo "CUI_VERSION_FILE=/tmp/cui-version.json" >> "$GITHUB_ENV"
 
       - name: Detect changes and compute version

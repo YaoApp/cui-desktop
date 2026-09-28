@@ -1,5 +1,14 @@
 name: Release
 
+# 稳定发版（CDN）。
+#
+# 版本模型：`cui/version.json` = **当前正在开发的版本**（= 待发布版本）。
+#   - 平时不动，一个小版本下可积累 N 个 commit；
+#   - 正式发版：用该版本打 tag `v<version>` 并发布；
+#   - 发布完成后，本工作流把 `cui/version.json` 切到**下一个补丁版**（如 1.1.11 → 1.1.12）；
+#   - 若开发中出现破坏性变更，由人工执行 `version.mjs bump minor`（如 1.1.x → 1.2.0）。
+#
+# 稳定版构建会 **pin cui tag `v<version>`**，保证可复现。
 on:
   push:
     tags:
@@ -7,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.0.0). Leave empty to derive from tag."
+        description: "可选；必须与 cui/version.json 一致（留空则直接使用它）"
         required: false
 
 permissions:
@@ -19,32 +28,95 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      cui_ref: ${{ steps.ver.outputs.cui_ref }}
     steps:
-      - name: Checkout (for release notes)
+      - name: Checkout (for gh release context)
         uses: actions/checkout@v4
 
-      - name: Resolve version
+      - name: Resolve version and tag cui (single source = cui/version.json)
         id: ver
+        env:
+          CUI_TOKEN: ${{ secrets.CUI_GITHUB_TOKEN_WRITE }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-          else
-            echo "::error::No version provided and no v* tag found"
+          set -euo pipefail
+          # 用 API 读取（raw.githubusercontent.com 有 CDN 缓存，可能读到旧版本）
+          CUI_VER="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main" \
+            | python3 -c 'import sys,json,base64;print(json.loads(base64.b64decode(json.load(sys.stdin)["content"]).decode())["version"])')"
+          if ! [[ "$CUI_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::cui/version.json 中的版本非法: ${CUI_VER}"
             exit 1
+          fi
+          echo "cui/version.json = ${CUI_VER}"
+
+          INPUT="${{ inputs.version }}"
+          if [ -n "$INPUT" ] && [ "$INPUT" != "$CUI_VER" ]; then
+            echo "::error::inputs.version (${INPUT}) != cui/version.json (${CUI_VER})；请先 bump cui/version.json 再发版。"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG_VER="${GITHUB_REF#refs/tags/v}"
+            if [ "$TAG_VER" != "$CUI_VER" ]; then
+              echo "::error::tag v${TAG_VER} != cui/version.json (${CUI_VER})"
+              exit 1
+            fi
+          fi
+
+          TAG="v${CUI_VER}"
+          echo "version=${CUI_VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "cui_ref=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # 给 cui 打 tag v<version>（已存在则跳过），使稳定版可以 pin 该 tag 复现构建
+          if curl -fsS -o /dev/null -H "Authorization: Bearer ${CUI_TOKEN}" \
+               "https://api.github.com/repos/YaoApp/cui/git/ref/tags/${TAG}"; then
+            echo "cui tag ${TAG} already exists"
+          else
+            CUI_SHA="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+              "https://api.github.com/repos/YaoApp/cui/commits/main" \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin)["sha"])')"
+            curl -fsS -X POST -H "Authorization: Bearer ${CUI_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/YaoApp/cui/git/refs" \
+              -d "{\"ref\":\"refs/tags/${TAG}\",\"sha\":\"${CUI_SHA}\"}"
+            echo "Created cui tag ${TAG} -> ${CUI_SHA}"
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          if node scripts/changelog.mjs extract --version "$VERSION" --out release-notes.md --quiet; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "--- release-notes.md ---"
+            cat release-notes.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CHANGELOG.md 中没有 [$VERSION] 段落，回退为 GitHub 自动生成 notes"
           fi
 
       - name: Pre-create draft GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          TAG="v${VERSION}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, skipping creation"
+          TAG="${{ steps.ver.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          FOUND="${{ steps.notes.outputs.found }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            if [ "$FOUND" = "true" ]; then
+              gh release edit "$TAG" --repo "$REPO" --notes-file release-notes.md
+              echo "Updated notes for existing release $TAG"
+            else
+              echo "Release $TAG already exists, keeping its notes"
+            fi
           else
-            gh release create "$TAG" --draft --title "v${VERSION}" --generate-notes
+            if [ "$FOUND" = "true" ]; then
+              gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes-file release-notes.md
+            else
+              gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --generate-notes
+            fi
             echo "Created draft release $TAG"
           fi
 
@@ -53,6 +125,8 @@ jobs:
     uses: ./.github/workflows/release-macos.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
+      release_tag: ${{ needs.resolve.outputs.tag }}
+      cui_ref: ${{ needs.resolve.outputs.cui_ref }}
     secrets: inherit
 
   release-windows:
@@ -60,4 +134,40 @@ jobs:
     uses: ./.github/workflows/release-windows.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
+      release_tag: ${{ needs.resolve.outputs.tag }}
+      cui_ref: ${{ needs.resolve.outputs.cui_ref }}
     secrets: inherit
+
+  # ===================================================================
+  # 发版收尾：把 cui/version.json 切到下一个补丁版（1.1.11 -> 1.1.12）。
+  # 平台构建全部成功后才执行；破坏性变更的 minor 升位由人工另行 bump。
+  # ===================================================================
+  finalize:
+    needs: [resolve, release-macos, release-windows]
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Switch cui/version.json to the next patch (post-release)
+        env:
+          CUI_TOKEN: ${{ secrets.CUI_GITHUB_TOKEN_WRITE }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          RESP="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main")"
+          CUR_VER="$(echo "$RESP" | python3 -c 'import sys,json,base64;print(json.loads(base64.b64decode(json.load(sys.stdin)["content"]).decode())["version"])')"
+          CUR_SHA="$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["sha"])')"
+
+          # 幂等：若 version.json 已不是本次发布版本（说明重跑），直接跳过
+          if [ "$CUR_VER" != "${VERSION}" ]; then
+            echo "cui/version.json is ${CUR_VER} (already switched past ${VERSION}); skip"
+            exit 0
+          fi
+
+          NEW="$(python3 -c "v='${VERSION}'.split('.');print('%s.%s.%d' % (v[0], v[1], int(v[2]) + 1))")"
+          CONTENT="$(printf '{\n  "version": "%s"\n}\n' "${NEW}" | base64 | tr -d '\n')"
+          curl -fsS -X PUT -H "Authorization: Bearer ${CUI_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json" \
+            -d "{\"message\":\"chore(version): switch to ${NEW} after releasing ${VERSION}\",\"content\":\"${CONTENT}\",\"sha\":\"${CUR_SHA}\",\"branch\":\"main\"}"
+          echo "cui/version.json ${CUR_VER} -> ${NEW} (released ${VERSION})"
