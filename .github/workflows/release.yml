@@ -1,5 +1,13 @@
 name: Release
 
+# 稳定发版（CDN）。
+#
+# 版本唯一来源：**cui/version.json**（单一来源）。
+# 发版流程：
+#   1. 先把 cui/version.json bump 到目标版本并推送到 cui main（唯一手写处）；
+#   2. 触发本工作流（或推送同版本 tag v<version>）；
+#   3. 本工作流只做「一致性校验」：inputs.version / tag 必须与
+#      cui/version.json 完全相同，否则直接失败，避免版本漂移。
 on:
   push:
     tags:
@@ -7,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.0.0). Leave empty to derive from tag."
+        description: "可选；必须与 cui/version.json 一致（留空则直接使用它）"
         required: false
 
 permissions:
@@ -19,32 +27,50 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - name: Checkout (for release notes)
+      - name: Checkout (for gh release context)
         uses: actions/checkout@v4
 
-      - name: Resolve version
+      - name: Resolve version from cui/version.json (single source)
         id: ver
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-          else
-            echo "::error::No version provided and no v* tag found"
+          set -euo pipefail
+          CUI_VER="$(curl -fsSL "https://raw.githubusercontent.com/YaoApp/cui/main/version.json" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])')"
+          if ! [[ "$CUI_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::cui/version.json 中的版本非法: ${CUI_VER}"
             exit 1
           fi
+          echo "cui/version.json = ${CUI_VER}"
+
+          INPUT="${{ inputs.version }}"
+          if [ -n "$INPUT" ] && [ "$INPUT" != "$CUI_VER" ]; then
+            echo "::error::inputs.version (${INPUT}) != cui/version.json (${CUI_VER})；请先 bump cui/version.json 再发版。"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG_VER="${GITHUB_REF#refs/tags/v}"
+            if [ "$TAG_VER" != "$CUI_VER" ]; then
+              echo "::error::tag v${TAG_VER} != cui/version.json (${CUI_VER})"
+              exit 1
+            fi
+          fi
+
+          echo "version=${CUI_VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${CUI_VER}" >> "$GITHUB_OUTPUT"
+          echo "resolved: version=${CUI_VER} tag=v${CUI_VER}"
 
       - name: Pre-create draft GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          TAG="v${VERSION}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          TAG="${{ steps.ver.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping creation"
           else
-            gh release create "$TAG" --draft --title "v${VERSION}" --generate-notes
+            gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --generate-notes
             echo "Created draft release $TAG"
           fi
 
@@ -53,6 +79,7 @@ jobs:
     uses: ./.github/workflows/release-macos.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
+      release_tag: ${{ needs.resolve.outputs.tag }}
     secrets: inherit
 
   release-windows:
@@ -60,4 +87,5 @@ jobs:
     uses: ./.github/workflows/release-windows.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
+      release_tag: ${{ needs.resolve.outputs.tag }}
     secrets: inherit
