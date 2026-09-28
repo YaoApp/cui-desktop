@@ -2,6 +2,12 @@
 /**
  * 版本助手（cui-desktop）
  *
+ * 版本来源：**单一来源为 cui 仓库根目录的 `version.json`**。
+ *   - 路径优先级：`CUI_VERSION_FILE` 环境变量 > `<cui-desktop>/cui/version.json`
+ *     （`scripts/pull-cui.sh` 的 checkout）> `<cui-desktop>/../cui/version.json`（同级 checkout）。
+ *   - CI 里 `CUI_VERSION_FILE` 指向从 cui main 下载的临时文件。
+ *   - cui-desktop 不再保留本地 version.json；`bump` 会写回上面解析到的同一个文件。
+ *
  * 版本模型：
  *   - `version.json` 的 `version` = **最新稳定版基线**（与最新稳定 tag `vX.Y.Z` 一致）。
  *   - `next`    = 依据 `v<base>..HEAD` 的 Conventional Commits 计算下一个稳定版
@@ -9,20 +15,31 @@
  *   - `nightly` = `<next>-nightly.<YYYYMMDD>`（SemVer 预发布，不污染稳定号）。
  *
  * 用法：
- *   node scripts/version.mjs current                 # 打印 version.json 的版本
+ *   node scripts/version.mjs current                 # 打印共享 version.json 的版本
  *   node scripts/version.mjs next                    # 打印下一个稳定版
  *   node scripts/version.mjs next --json             # {"version":"1.1.11","level":"patch","commits":3}
  *   node scripts/version.mjs nightly                 # 1.1.11-nightly.20260929
  *   node scripts/version.mjs nightly --date 20260929 # 指定日期
- *   node scripts/version.mjs bump [--dry-run]        # 把 next 写回 version.json（稳定发版后使用）
+ *   node scripts/version.mjs bump [--dry-run]        # 把 next 写回共享 version.json（稳定发版后使用）
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const VERSION_FILE = join(ROOT, 'version.json')
+// Single source of truth: the cui repo's version.json.
+// Resolution order: CUI_VERSION_FILE > <repo>/cui/version.json (pull-cui.sh checkout)
+// > <repo>/../cui/version.json (sibling checkout, e.g. local dev workspace).
+function resolveVersionFile() {
+	if (process.env.CUI_VERSION_FILE) return process.env.CUI_VERSION_FILE
+	const candidates = [join(ROOT, 'cui', 'version.json'), join(ROOT, '..', 'cui', 'version.json')]
+	for (const f of candidates) {
+		if (existsSync(f)) return f
+	}
+	return candidates[0]
+}
+const VERSION_FILE = resolveVersionFile()
 
 const args = process.argv.slice(2)
 const cmd = args[0]
@@ -37,6 +54,11 @@ function git(a) {
 }
 
 function readVersion() {
+	if (!existsSync(VERSION_FILE)) {
+		console.error(`ERROR: version file not found: ${VERSION_FILE}`)
+		console.error('Run `bash scripts/pull-cui.sh` to fetch the cui repo, or set CUI_VERSION_FILE to the path of a cui version.json.')
+		process.exit(1)
+	}
 	return JSON.parse(readFileSync(VERSION_FILE, 'utf8')).version
 }
 
