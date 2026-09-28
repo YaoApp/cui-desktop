@@ -1,0 +1,214 @@
+name: Nightly
+
+# 夜间构建：
+#   - 只有「有变更」才构建（比较 cui-desktop HEAD + cui main SHA 与上次 nightly 记录）
+#   - 复用 release-macos.yml / release-windows.yml（publish_target=github，不推 CDN）
+#   - 产物与 latest-nightly.json 只发到这个 rolling 预发布（tag: nightly）
+#   - 稳定版仍走 release.yml → CDN（latest.json）
+on:
+  schedule:
+    - cron: "0 18 * * *" # UTC 18:00 = 北京 02:00
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force build even if no changes"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  NIGHTLY_TAG: nightly
+
+jobs:
+  # ── 1) 变更检测 + 计算版本 ──
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      version: ${{ steps.detect.outputs.version }}
+      desktop_sha: ${{ steps.detect.outputs.desktop_sha }}
+      cui_sha: ${{ steps.detect.outputs.cui_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Detect changes and compute version
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          DESKTOP_SHA="$(git rev-parse HEAD)"
+          CUI_SHA="$(git ls-remote https://github.com/YaoApp/cui.git refs/heads/main | cut -f1)"
+          VERSION="$(node scripts/version.mjs nightly)"
+          echo "desktop_sha=$DESKTOP_SHA" >> "$GITHUB_OUTPUT"
+          echo "cui_sha=$CUI_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "desktop_sha=$DESKTOP_SHA"
+          echo "cui_sha=$CUI_SHA"
+          echo "nightly_version=$VERSION"
+
+          LAST_DESKTOP=""
+          LAST_CUI=""
+          if gh release view "$NIGHTLY_TAG" >/dev/null 2>&1; then
+            rm -rf /tmp/last && mkdir -p /tmp/last
+            if gh release download "$NIGHTLY_TAG" -p build-info.json -D /tmp/last --clobber 2>/dev/null; then
+              LAST_DESKTOP="$(jq -r '.desktop_sha // empty' /tmp/last/build-info.json)"
+              LAST_CUI="$(jq -r '.cui_sha // empty' /tmp/last/build-info.json)"
+            fi
+          fi
+          echo "last nightly: desktop=$LAST_DESKTOP cui=$LAST_CUI"
+
+          if [ "${FORCE:-false}" = "true" ]; then
+            echo "forced build"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$DESKTOP_SHA" = "$LAST_DESKTOP" ] && [ "$CUI_SHA" = "$LAST_CUI" ]; then
+            echo "no changes since last nightly → skip"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changes detected → build"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 2) 准备 rolling nightly 预发布（并清掉旧资产，只保留最新）──
+  prepare:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure rolling nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          if gh release view "$NIGHTLY_TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release edit "$NIGHTLY_TAG" -R "$REPO" --prerelease
+          else
+            gh release create "$NIGHTLY_TAG" -R "$REPO" --prerelease \
+              --title "Nightly Build" \
+              --notes "Rolling nightly builds — only the latest version is kept."
+          fi
+          # 清空旧资产，保证只留当晚产物
+          gh release view "$NIGHTLY_TAG" -R "$REPO" --json assets --jq '.assets[].name' | while read -r name; do
+            [ -n "$name" ] && gh release delete-asset "$NIGHTLY_TAG" "$name" -R "$REPO" -y || true
+          done
+
+  # ── 3) 构建（复用现有发布工作流，publish_target=github）──
+  build-macos:
+    needs: [check, prepare]
+    if: needs.check.outputs.changed == 'true'
+    uses: ./.github/workflows/release-macos.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+      publish_target: github
+      release_tag: nightly
+      updater_endpoint: https://github.com/YaoApp/cui-desktop/releases/download/nightly/latest-nightly.json
+    secrets: inherit
+
+  build-windows:
+    needs: [check, prepare]
+    if: needs.check.outputs.changed == 'true'
+    uses: ./.github/workflows/release-windows.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+      publish_target: github
+      release_tag: nightly
+      updater_endpoint: https://github.com/YaoApp/cui-desktop/releases/download/nightly/latest-nightly.json
+    secrets: inherit
+
+  # ── 4) 生成 nightly 更新清单 + 记录本次 SHA（供下次变更检测）──
+  publish:
+    needs: [check, build-macos, build-windows]
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p sigs
+          gh release download "$NIGHTLY_TAG" -R "${{ github.repository }}" -p '*.sig' -D sigs --clobber || true
+          ls -la sigs || true
+
+      - name: Build latest-nightly.json
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY' > latest-nightly.json
+          import json, os, glob, base64
+          version = os.environ["VERSION"]
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/nightly"
+
+          def sig(patterns):
+              for p in patterns:
+                  files = glob.glob(p)
+                  if files:
+                      raw = open(files[0], "rb").read().strip()
+                      try:
+                          base64.b64decode(raw)
+                          return raw.decode("utf-8", "replace")
+                      except Exception:
+                          return base64.b64encode(raw).decode("ascii")
+              return ""
+
+          mapping = {
+              "darwin-aarch64": (f"{base}/yaoagents-{version}-darwin-arm64.app.tar.gz", ["sigs/*darwin-arm64.app.tar.gz.sig"]),
+              "darwin-x86_64":  (f"{base}/yaoagents-{version}-darwin-amd64.app.tar.gz", ["sigs/*darwin-amd64.app.tar.gz.sig"]),
+              "windows-x86_64": (f"{base}/yaoagents-{version}-windows-x64-setup.nsis.zip", ["sigs/*windows-x64-setup.nsis.zip.sig"]),
+          }
+          platforms = {}
+          for key, (url, pat) in mapping.items():
+              s = sig(pat)
+              if s:
+                  platforms[key] = {"signature": s, "url": url}
+          print(json.dumps({
+              "version": version,
+              "notes": "nightly",
+              "pub_date": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }, indent=2))
+          PY
+          cat latest-nightly.json
+
+      - name: Upload manifest and build-info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+          DESKTOP_SHA: ${{ needs.check.outputs.desktop_sha }}
+          CUI_SHA: ${{ needs.check.outputs.cui_sha }}
+        run: |
+          set -euo pipefail
+          cat > build-info.json <<EOF
+          {
+            "version": "${VERSION}",
+            "desktop_sha": "${DESKTOP_SHA}",
+            "cui_sha": "${CUI_SHA}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat build-info.json
+          gh release upload "$NIGHTLY_TAG" latest-nightly.json build-info.json \
+            -R "${{ github.repository }}" --clobber
+          echo "Nightly published: ${VERSION}"
