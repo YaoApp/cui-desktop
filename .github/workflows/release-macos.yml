@@ -216,7 +216,7 @@ jobs:
           sleep 2
           hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" \
             -ov -format UDZO "$DMG_PATH"
-          codesign --force --verbose --timestamp --sign "$IDENTITY" "$DMG_PATH"
+          bash scripts/codesign-dmg-retry.sh "$IDENTITY" "$DMG_PATH"
           codesign --verify --verbose=2 "$DMG_PATH"
 
       - name: Collect artifacts
@@ -328,7 +328,7 @@ jobs:
           ln -s /Applications "$STAGING/Applications"
           hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" \
             -ov -format UDZO "$DMG_FILE"
-          codesign --force --verbose --timestamp --sign "$IDENTITY" "$DMG_FILE"
+          bash scripts/codesign-dmg-retry.sh "$IDENTITY" "$DMG_FILE"
           xcrun stapler staple "$DMG_FILE"
           xcrun stapler validate "$DMG_FILE"
           echo "DMG rebuilt with stapled .app and stapled."
