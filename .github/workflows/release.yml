@@ -2,12 +2,13 @@ name: Release
 
 # 稳定发版（CDN）。
 #
-# 版本唯一来源：**cui/version.json**（单一来源）。
-# 发版流程：
-#   1. 先把 cui/version.json bump 到目标版本并推送到 cui main（唯一手写处）；
-#   2. 触发本工作流（或推送同版本 tag v<version>）；
-#   3. 本工作流只做「一致性校验」：inputs.version / tag 必须与
-#      cui/version.json 完全相同，否则直接失败，避免版本漂移。
+# 版本模型：`cui/version.json` = **当前正在开发的版本**（= 待发布版本）。
+#   - 平时不动，一个小版本下可积累 N 个 commit；
+#   - 正式发版：用该版本打 tag `v<version>` 并发布；
+#   - 发布完成后，本工作流把 `cui/version.json` 切到**下一个补丁版**（如 1.1.11 → 1.1.12）；
+#   - 若开发中出现破坏性变更，由人工执行 `version.mjs bump minor`（如 1.1.x → 1.2.0）。
+#
+# 稳定版构建会 **pin cui tag `v<version>`**，保证可复现。
 on:
   push:
     tags:
@@ -28,12 +29,15 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
+      cui_ref: ${{ steps.ver.outputs.cui_ref }}
     steps:
       - name: Checkout (for gh release context)
         uses: actions/checkout@v4
 
-      - name: Resolve version from cui/version.json (single source)
+      - name: Resolve version and tag cui (single source = cui/version.json)
         id: ver
+        env:
+          CUI_TOKEN: ${{ secrets.CUI_GITHUB_TOKEN_WRITE }}
         run: |
           set -euo pipefail
           CUI_VER="$(curl -fsSL "https://raw.githubusercontent.com/YaoApp/cui/main/version.json" \
@@ -57,9 +61,25 @@ jobs:
             fi
           fi
 
+          TAG="v${CUI_VER}"
           echo "version=${CUI_VER}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${CUI_VER}" >> "$GITHUB_OUTPUT"
-          echo "resolved: version=${CUI_VER} tag=v${CUI_VER}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "cui_ref=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # 给 cui 打 tag v<version>（已存在则跳过），使稳定版可以 pin 该 tag 复现构建
+          if curl -fsS -o /dev/null -H "Authorization: Bearer ${CUI_TOKEN}" \
+               "https://api.github.com/repos/YaoApp/cui/git/ref/tags/${TAG}"; then
+            echo "cui tag ${TAG} already exists"
+          else
+            CUI_SHA="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+              "https://api.github.com/repos/YaoApp/cui/commits/main" \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin)["sha"])')"
+            curl -fsS -X POST -H "Authorization: Bearer ${CUI_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/YaoApp/cui/git/refs" \
+              -d "{\"ref\":\"refs/tags/${TAG}\",\"sha\":\"${CUI_SHA}\"}"
+            echo "Created cui tag ${TAG} -> ${CUI_SHA}"
+          fi
 
       - name: Pre-create draft GitHub Release
         env:
@@ -80,6 +100,7 @@ jobs:
     with:
       version: ${{ needs.resolve.outputs.version }}
       release_tag: ${{ needs.resolve.outputs.tag }}
+      cui_ref: ${{ needs.resolve.outputs.cui_ref }}
     secrets: inherit
 
   release-windows:
@@ -88,4 +109,31 @@ jobs:
     with:
       version: ${{ needs.resolve.outputs.version }}
       release_tag: ${{ needs.resolve.outputs.tag }}
+      cui_ref: ${{ needs.resolve.outputs.cui_ref }}
     secrets: inherit
+
+  # ===================================================================
+  # 发版收尾：把 cui/version.json 切到下一个补丁版（1.1.11 -> 1.1.12）。
+  # 平台构建全部成功后才执行；破坏性变更的 minor 升位由人工另行 bump。
+  # ===================================================================
+  finalize:
+    needs: [resolve, release-macos, release-windows]
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Switch cui/version.json to the next patch (post-release)
+        env:
+          CUI_TOKEN: ${{ secrets.CUI_GITHUB_TOKEN_WRITE }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          NEW="$(python3 -c "v='${VERSION}'.split('.');print('%s.%s.%d' % (v[0], v[1], int(v[2]) + 1))")"
+          CUR_SHA="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["sha"])')"
+          CONTENT="$(printf '{\n  "version": "%s"\n}\n' "${NEW}" | base64 | tr -d '\n')"
+          curl -fsS -X PUT -H "Authorization: Bearer ${CUI_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json" \
+            -d "{\"message\":\"chore(version): switch to ${NEW} after releasing ${VERSION}\",\"content\":\"${CONTENT}\",\"sha\":\"${CUR_SHA}\",\"branch\":\"main\"}"
+          echo "cui/version.json -> ${NEW} (released ${VERSION})"

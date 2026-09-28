@@ -8,20 +8,21 @@
  *   - CI 里 `CUI_VERSION_FILE` 指向从 cui main 下载的临时文件。
  *   - cui-desktop 不再保留本地 version.json；`bump` 会写回上面解析到的同一个文件。
  *
- * 版本模型：
- *   - `version.json` 的 `version` = **最新稳定版基线**（与最新稳定 tag `vX.Y.Z` 一致）。
- *   - `next`    = 依据 `v<base>..HEAD` 的 Conventional Commits 计算下一个稳定版
- *                 （BREAKING/! → major；含 feat → minor；其余 → patch）。
- *   - `nightly` = `<base>-nightly.<YYYYMMDD>`（SemVer 预发布；**与 version.json 完全一致**，
- *                 不随提交自动升位 —— 升位是稳定发版时的动作）。
+ * 版本模型（version.json = **当前正在开发的版本**）：
+ *   - 平时不动：一个小版本下面可以积累 N 个 commit，版本号保持不变。
+ *   - 正式发版：用 `current`（= 待发布版本）打 tag 并发布；
+ *               发布完成后 `bump patch` 切到下一个补丁版（如 1.1.11 → 1.1.12）。
+ *   - 开发中出现**破坏性变更**：`bump minor`（如 1.1.x → 1.2.0）。
+ *   - `nightly` = `<current>-nightly.<YYYYMMDD>`（与 version.json 一致，不自动升位）。
+ *   - `next`    = 按 Conventional Commits 给出的**升位建议**（仅参考，不写文件）。
  *
  * 用法：
- *   node scripts/version.mjs current                 # 打印共享 version.json 的版本
- *   node scripts/version.mjs next                    # 打印下一个稳定版
- *   node scripts/version.mjs next --json             # {"version":"1.1.11","level":"patch","commits":3}
- *   node scripts/version.mjs nightly                 # 1.1.11-nightly.20260929
- *   node scripts/version.mjs nightly --date 20260929 # 指定日期
- *   node scripts/version.mjs bump [--dry-run]        # 把 next 写回共享 version.json（稳定发版后使用）
+ *   node scripts/version.mjs current                  # 当前开发/待发布版本
+ *   node scripts/version.mjs nightly                  # 1.1.11-nightly.20260929
+ *   node scripts/version.mjs nightly --date 20260929  # 指定日期
+ *   node scripts/version.mjs next --json              # 建议升位（仅参考）
+ *   node scripts/version.mjs bump patch [--dry-run]   # 发版后：切下一个补丁版
+ *   node scripts/version.mjs bump minor               # 破坏性变更：升 minor
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -142,11 +143,21 @@ if (cmd === 'current') {
 	const version = `${base}-nightly.${today(val('--date'))}`
 	console.log(version)
 } else if (cmd === 'bump') {
+	// 显式级别：bump patch|minor|major（不指定则按提交推断，仅作便利）
+	const explicit = args[1]
+	const LEVELS = ['patch', 'minor', 'major']
+	if (explicit && !LEVELS.includes(explicit)) {
+		console.error(`invalid level: ${explicit} (expected: patch|minor|major)`)
+		process.exit(2)
+	}
 	const base = readVersion()
 	const { level, commits } = analyze(base)
-	const version = bump(base, level)
+	const finalLevel = explicit || level
+	const version = bump(base, finalLevel)
 	if (has('--dry-run')) {
-		console.log(`${base} -> ${version} (${level}, ${commits} commits)`)
+		console.log(
+			`${base} -> ${version} (${finalLevel}${explicit ? ', explicit' : `, suggested from ${commits} commits`})`
+		)
 	} else {
 		writeFileSync(VERSION_FILE, JSON.stringify({ version }, null, 2) + '\n')
 		console.log(`${base} -> ${version}`)
