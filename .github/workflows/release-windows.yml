@@ -181,7 +181,7 @@ jobs:
           find "$BUNDLE_DIR" -type f | sort
 
           # Find the NSIS setup exe
-          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
+          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1 || true)
           if [ -z "$NSIS_EXE" ]; then
             echo "::error::No NSIS setup exe found in bundle output!"
             exit 1
@@ -219,11 +219,17 @@ jobs:
           BUNDLE_DIR="src-tauri/target/release/bundle"
           mkdir -p release
 
-          MSI_FILE=$(find "$BUNDLE_DIR/msi" -name "*.msi" 2>/dev/null | head -1)
-          [ -n "$MSI_FILE" ] && cp "$MSI_FILE" "release/yaoagents-${VERSION}-windows.msi"
+          MSI_FILE=$(find "$BUNDLE_DIR/msi" -name "*.msi" 2>/dev/null | head -1 || true)
+          if [ -n "$MSI_FILE" ]; then
+            cp "$MSI_FILE" "release/yaoagents-${VERSION}-windows.msi"
+          else
+            echo "No MSI in bundle (e.g. nightly builds nsis only); skipping."
+          fi
 
-          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
-          [ -n "$NSIS_EXE" ] && cp "$NSIS_EXE" "release/yaoagents-${VERSION}-windows-x64-setup.exe"
+          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1 || true)
+          if [ -n "$NSIS_EXE" ]; then
+            cp "$NSIS_EXE" "release/yaoagents-${VERSION}-windows-x64-setup.exe"
+          fi
 
           # Copy the updater package (created in previous step)
           ZIP_NAME="yaoagents-${VERSION}-windows-x64-setup.nsis.zip"
