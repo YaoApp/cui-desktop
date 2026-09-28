@@ -126,7 +126,7 @@ jobs:
 
       - name: Build Tauri app (macOS, signed)
         if: runner.os == 'macOS'
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: cargo tauri build --target ${{ matrix.target }} --features devtools
         env:
           # Tauri built-in signing
           APPLE_SIGNING_IDENTITY: "Developer ID Application: ${{ secrets.APPLE_SIGN }}"
@@ -135,7 +135,7 @@ jobs:
 
       - name: Build Tauri app (non-macOS)
         if: runner.os != 'macOS'
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: cargo tauri build --target ${{ matrix.target }} --features devtools
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 

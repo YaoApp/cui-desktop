@@ -17,7 +17,7 @@ path = "src/main.rs"
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = ["devtools", "tray-icon", "image-png"] }
+tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
@@ -51,6 +51,11 @@ objc2-foundation = "0.3"
 
 [dev-dependencies]
 libc = "0.2"
+
+[features]
+# 打开 DevTools（生产打包默认不带）。nightly / dev 构建用 `--features devtools` 启用；
+# 正式版（CDN）不启用，用户无法打开调试工具。
+devtools = ["tauri/devtools"]
 
 [patch.crates-io]
 tauri = { git = "https://github.com/F0RLE/tauri", branch = "feat/permission-handler" }
