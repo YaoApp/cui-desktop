@@ -311,7 +311,6 @@ jobs:
           rm -f "$APP_ZIP"
           zip -r "$APP_ZIP" "/tmp/${APP_NAME}.app"
           submit_and_wait "$APP_ZIP" ".app"
-          submit_and_wait "$DMG_FILE" "DMG"
           rm -f "$APP_ZIP"
 
           # Staple the notarization ticket onto the .app.
@@ -329,6 +328,9 @@ jobs:
           hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" \
             -ov -format UDZO "$DMG_FILE"
           bash scripts/codesign-dmg-retry.sh "$IDENTITY" "$DMG_FILE"
+          # IMPORTANT: notarize the FINAL (rebuilt) DMG. Submitting the pre-rebuild DMG
+          # leaves the rebuilt one un-notarized, so `stapler staple` fails with Error 65.
+          submit_and_wait "$DMG_FILE" "DMG"
           xcrun stapler staple "$DMG_FILE"
           xcrun stapler validate "$DMG_FILE"
           echo "DMG rebuilt with stapled .app and stapled."
