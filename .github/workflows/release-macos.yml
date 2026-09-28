@@ -6,11 +6,35 @@ on:
       version:
         type: string
         required: true
+      updater_endpoint:
+        type: string
+        required: false
+        default: "https://get.yaoapps.com/yaoagents/latest.json"
+      release_tag:
+        type: string
+        required: false
+        default: ""
+      publish_target:
+        type: string
+        required: false
+        default: "cdn"
   workflow_dispatch:
     inputs:
       version:
         description: "Release version (e.g. 1.0.0)"
         required: true
+      updater_endpoint:
+        description: "Updater manifest endpoint"
+        required: false
+        default: "https://get.yaoapps.com/yaoagents/latest.json"
+      release_tag:
+        description: "GitHub Release tag (empty = v<version>)"
+        required: false
+        default: ""
+      publish_target:
+        description: "cdn (stable) or github (nightly)"
+        required: false
+        default: "cdn"
 
 permissions:
   contents: write
@@ -91,6 +115,7 @@ jobs:
       - name: Patch version and updater config
         env:
           TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+          UPDATER_ENDPOINT: ${{ inputs.updater_endpoint }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
@@ -106,7 +131,7 @@ jobs:
           if pubkey:
               conf.setdefault('plugins', {}).setdefault('updater', {})
               conf['plugins']['updater']['pubkey'] = pubkey
-              conf['plugins']['updater']['endpoints'] = ['https://get.yaoapps.com/yaoagents/latest.json']
+              conf['plugins']['updater']['endpoints'] = [os.environ.get('UPDATER_ENDPOINT', 'https://get.yaoapps.com/yaoagents/latest.json')]
           with open('tauri.conf.json', 'w') as f:
               json.dump(conf, f, indent=2)
               f.write('\n')
@@ -219,6 +244,7 @@ jobs:
           path: release/*
 
       - name: Upload to CDN
+        if: ${{ inputs.publish_target != 'github' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -272,7 +298,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v${{ inputs.version }}"
+          TAG="${{ inputs.release_tag || format('v{0}', inputs.version) }}"
           ls -la release/
           gh release upload "$TAG" release/* --repo ${{ github.repository }} --clobber
           echo "Uploaded macOS artifacts to release $TAG"
@@ -282,7 +308,7 @@ jobs:
   # ===================================================================
   notarize:
     needs: build-desktop
-    if: always() && needs.build-desktop.result == 'success'
+    if: always() && needs.build-desktop.result == 'success' && inputs.publish_target != 'github'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger notarize-submit
