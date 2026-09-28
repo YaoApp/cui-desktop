@@ -40,8 +40,10 @@ jobs:
           CUI_TOKEN: ${{ secrets.CUI_GITHUB_TOKEN_WRITE }}
         run: |
           set -euo pipefail
-          CUI_VER="$(curl -fsSL "https://raw.githubusercontent.com/YaoApp/cui/main/version.json" \
-            | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])')"
+          # 用 API 读取（raw.githubusercontent.com 有 CDN 缓存，可能读到旧版本）
+          CUI_VER="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main" \
+            | python3 -c 'import sys,json,base64;print(json.loads(base64.b64decode(json.load(sys.stdin)["content"]).decode())["version"])')"
           if ! [[ "$CUI_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::cui/version.json 中的版本非法: ${CUI_VER}"
             exit 1
@@ -127,13 +129,21 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
+          RESP="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
+            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main")"
+          CUR_VER="$(echo "$RESP" | python3 -c 'import sys,json,base64;print(json.loads(base64.b64decode(json.load(sys.stdin)["content"]).decode())["version"])')"
+          CUR_SHA="$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["sha"])')"
+
+          # 幂等：若 version.json 已不是本次发布版本（说明重跑），直接跳过
+          if [ "$CUR_VER" != "${VERSION}" ]; then
+            echo "cui/version.json is ${CUR_VER} (already switched past ${VERSION}); skip"
+            exit 0
+          fi
+
           NEW="$(python3 -c "v='${VERSION}'.split('.');print('%s.%s.%d' % (v[0], v[1], int(v[2]) + 1))")"
-          CUR_SHA="$(curl -fsSL -H "Authorization: Bearer ${CUI_TOKEN}" \
-            "https://api.github.com/repos/YaoApp/cui/contents/version.json?ref=main" \
-            | python3 -c 'import sys,json;print(json.load(sys.stdin)["sha"])')"
           CONTENT="$(printf '{\n  "version": "%s"\n}\n' "${NEW}" | base64 | tr -d '\n')"
           curl -fsS -X PUT -H "Authorization: Bearer ${CUI_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/YaoApp/cui/contents/version.json" \
             -d "{\"message\":\"chore(version): switch to ${NEW} after releasing ${VERSION}\",\"content\":\"${CONTENT}\",\"sha\":\"${CUR_SHA}\",\"branch\":\"main\"}"
-          echo "cui/version.json -> ${NEW} (released ${VERSION})"
+          echo "cui/version.json ${CUR_VER} -> ${NEW} (released ${VERSION})"
