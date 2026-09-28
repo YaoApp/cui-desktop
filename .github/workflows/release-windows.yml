@@ -18,6 +18,10 @@ on:
         type: string
         required: false
         default: "cdn"
+      bundle_targets:
+        type: string
+        required: false
+        default: "msi,nsis"
   workflow_dispatch:
     inputs:
       version:
@@ -35,6 +39,10 @@ on:
         description: "cdn (stable) or github (nightly)"
         required: false
         default: "cdn"
+      bundle_targets:
+        description: "Tauri bundle targets (msi,nsis). Nightly uses nsis only."
+        required: false
+        default: "msi,nsis"
 
 permissions:
   contents: write
@@ -110,6 +118,7 @@ jobs:
         env:
           TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
           UPDATER_ENDPOINT: ${{ inputs.updater_endpoint }}
+          BUNDLE_TARGETS: ${{ inputs.bundle_targets }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
@@ -119,7 +128,7 @@ jobs:
           with open('tauri.conf.json') as f:
               conf = json.load(f)
           conf['version'] = '${VERSION}'
-          conf['bundle']['targets'] = ['msi', 'nsis']
+          conf['bundle']['targets'] = [t.strip() for t in os.environ.get('BUNDLE_TARGETS', 'msi,nsis').split(',') if t.strip()]
           conf['bundle']['createUpdaterArtifacts'] = True
           pubkey = os.environ.get('TAURI_UPDATER_PUBKEY', '')
           if pubkey:

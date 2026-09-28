@@ -130,6 +130,8 @@ jobs:
       version: ${{ needs.check.outputs.version }}
       publish_target: github
       release_tag: nightly
+      # MSI(WiX) 要求预发布标识为纯数字且 ≤65535；nightly 版本含 "nightly.<date>"，故只出 nsis
+      bundle_targets: nsis
       updater_endpoint: https://github.com/YaoApp/cui-desktop/releases/download/nightly/latest-nightly.json
     secrets: inherit
 
