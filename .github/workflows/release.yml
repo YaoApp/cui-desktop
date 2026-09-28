@@ -83,16 +83,40 @@ jobs:
             echo "Created cui tag ${TAG} -> ${CUI_SHA}"
           fi
 
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          if node scripts/changelog.mjs extract --version "$VERSION" --out release-notes.md --quiet; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "--- release-notes.md ---"
+            cat release-notes.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CHANGELOG.md 中没有 [$VERSION] 段落，回退为 GitHub 自动生成 notes"
+          fi
+
       - name: Pre-create draft GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
           REPO="${{ github.repository }}"
+          FOUND="${{ steps.notes.outputs.found }}"
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, skipping creation"
+            if [ "$FOUND" = "true" ]; then
+              gh release edit "$TAG" --repo "$REPO" --notes-file release-notes.md
+              echo "Updated notes for existing release $TAG"
+            else
+              echo "Release $TAG already exists, keeping its notes"
+            fi
           else
-            gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --generate-notes
+            if [ "$FOUND" = "true" ]; then
+              gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes-file release-notes.md
+            else
+              gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --generate-notes
+            fi
             echo "Created draft release $TAG"
           fi
 
