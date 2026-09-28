@@ -180,7 +180,7 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
           IDENTITY="Developer ID Application: ${APPLE_SIGN}"
-          APP_BUNDLE=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1)
+          APP_BUNDLE=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1 || true)
           if [ -z "$APP_BUNDLE" ]; then
             echo "::error::No .app bundle found"
             exit 1
@@ -196,12 +196,12 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
           IDENTITY="Developer ID Application: ${APPLE_SIGN}"
-          APP_BUNDLE=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1)
+          APP_BUNDLE=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1 || true)
           APP_NAME=$(basename "$APP_BUNDLE" .app)
           VERSION="${{ steps.version.outputs.version }}"
           ARCH="${{ matrix.arch }}"
 
-          OLD_DMG=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)
+          OLD_DMG=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1 || true)
           [ -n "$OLD_DMG" ] && rm -f "$OLD_DMG"
 
           DMG_PATH="${BUNDLE_DIR}/dmg/yaoagents-${VERSION}-darwin-${ARCH}.dmg"
@@ -227,11 +227,11 @@ jobs:
           BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
           mkdir -p release
 
-          DMG_FILE=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1)
+          DMG_FILE=$(find "$BUNDLE_DIR" -name "*.dmg" | head -1 || true)
           [ -n "$DMG_FILE" ] && cp "$DMG_FILE" "release/yaoagents-${VERSION}-darwin-${ARCH}.dmg"
 
-          TAR_FILE=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz" 2>/dev/null | head -1)
-          SIG_FILE=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
+          TAR_FILE=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz" 2>/dev/null | head -1 || true)
+          SIG_FILE=$(find "$BUNDLE_DIR/macos" -name "*.app.tar.gz.sig" 2>/dev/null | head -1 || true)
           [ -n "$TAR_FILE" ] && cp "$TAR_FILE" "release/yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz"
           [ -n "$SIG_FILE" ] && cp "$SIG_FILE" "release/yaoagents-${VERSION}-darwin-${ARCH}.app.tar.gz.sig"
 
