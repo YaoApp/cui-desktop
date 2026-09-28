@@ -175,7 +175,8 @@ jobs:
           [ $FAIL -eq 0 ] || exit 1
 
       - name: Build Tauri app
-        run: cargo tauri build
+        # nightly（publish_target=github）带 devtools；正式版（cdn）不带
+        run: cargo tauri build ${{ inputs.publish_target == 'github' && '--features devtools' || '' }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
