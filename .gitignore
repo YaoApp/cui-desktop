@@ -20,6 +20,9 @@ cui
 # CUI build output (generated from CUI source)
 cui-dist/
 
+# CUI resolved commit SHA (written by scripts/pull-cui.sh)
+.cui-sha
+
 # Cargo lock (regenerated from Cargo.toml)
 src-tauri/Cargo.lock
 
