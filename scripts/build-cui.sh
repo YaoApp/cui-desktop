@@ -31,7 +31,7 @@ rm -rf "$DIST_DIR"
 cp -r packages/cui/dist "$DIST_DIR"
 
 # Record build metadata (traceability: version + which cui/desktop commit was built)
-VERSION="$(node "$PROJECT_DIR/scripts/version.mjs" current 2>/dev/null || echo unknown)"
+VERSION="$(CUI_VERSION_FILE="$CUI_DIR/version.json" node "$PROJECT_DIR/scripts/version.mjs" current 2>/dev/null || echo unknown)"
 CUI_SHA="$(cat "$PROJECT_DIR/.cui-sha" 2>/dev/null || git -C "$CUI_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 DESKTOP_SHA="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 CUI_REF="${CUI_REF:-main}"

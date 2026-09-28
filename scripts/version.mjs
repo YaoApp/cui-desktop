@@ -27,11 +27,18 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-// Single source of truth: cui repo root version.json.
-// Overridable via CUI_VERSION_FILE (CI downloads it from cui main).
-const VERSION_FILE = process.env.CUI_VERSION_FILE
-	? process.env.CUI_VERSION_FILE
-	: join(ROOT, '..', 'cui', 'version.json')
+// Single source of truth: the cui repo's version.json.
+// Resolution order: CUI_VERSION_FILE > <repo>/cui/version.json (pull-cui.sh checkout)
+// > <repo>/../cui/version.json (sibling checkout, e.g. local dev workspace).
+function resolveVersionFile() {
+	if (process.env.CUI_VERSION_FILE) return process.env.CUI_VERSION_FILE
+	const candidates = [join(ROOT, 'cui', 'version.json'), join(ROOT, '..', 'cui', 'version.json')]
+	for (const f of candidates) {
+		if (existsSync(f)) return f
+	}
+	return candidates[0]
+}
+const VERSION_FILE = resolveVersionFile()
 
 const args = process.argv.slice(2)
 const cmd = args[0]
